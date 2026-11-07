@@ -741,8 +741,7 @@ in
       build = builtCrates.crates.${packageId};
       crateInfo = resolved.crates.${packageId};
       reusableRootLib = builtCrates.cratesLibOnly.${packageId};
-      hasLibrary =
-        (crateInfo.libPath or null) != null || (crateInfo.libCrateTypes or [ ]) != [ ];
+      hasLibrary = (crateInfo.libPath or null) != null || (crateInfo.libCrateTypes or [ ]) != [ ];
       terminalOverride = {
         terminalArtifacts = "discard";
       }
@@ -815,6 +814,7 @@ in
         workspaceSrc:
         nextest.mkRun {
           inherit name testsDrv workspaceSrc;
+          src = workspaceSrc;
         };
       nextestRun = nextest.mkRun {
         inherit name testsDrv;

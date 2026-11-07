@@ -169,46 +169,51 @@ let
       workspaceSrc,
       # Extra `cargo-nextest run` args, e.g. ["--profile" "ci"].
       extraArgs ? [ ],
+      # Unpack the remap source so tests can read fixtures from the build tree.
+      src ? null,
     }@args:
-    pkgs.stdenvNoCC.mkDerivation {
-      name = "${name}-nextest";
+    pkgs.stdenvNoCC.mkDerivation (
+      {
+        name = "${name}-nextest";
 
-      inherit (testsDrv) nativeCheckInputs;
-      nativeBuildInputs = [ pkgs.cargo-nextest ];
+        inherit (testsDrv) nativeCheckInputs;
+        nativeBuildInputs = [ pkgs.cargo-nextest ];
 
-      dontUnpack = true;
-      dontConfigure = true;
-      dontBuild = true;
-      doCheck = true;
+        dontUnpack = src == null;
+        dontConfigure = true;
+        dontBuild = true;
+        doCheck = true;
 
-      checkPhase = ''
-        runHook preCheck
+        checkPhase = ''
+          runHook preCheck
 
-        export CARGO_TARGET_TMPDIR="$(mktemp -d)"
-        export RUST_BACKTRACE=''${RUST_BACKTRACE-1}
-        # nextest prints the report to stderr. tee keeps a copy that
-        # becomes $out, and pipefail preserves nextest's exit code.
-        set -o pipefail
-        cargo-nextest nextest run \
-          --binaries-metadata ${testsDrv}/nix-support/binaries-metadata.json \
-          --cargo-metadata ${metadataFile} \
-          --workspace-remap ${workspaceSrc} \
-          ${lib.escapeShellArgs extraArgs} |& tee nextest.log
+          export CARGO_TARGET_TMPDIR="$(mktemp -d)"
+          export RUST_BACKTRACE=''${RUST_BACKTRACE-1}
+          # nextest prints the report to stderr. tee keeps a copy that
+          # becomes $out, and pipefail preserves nextest's exit code.
+          set -o pipefail
+          cargo-nextest nextest run \
+            --binaries-metadata ${testsDrv}/nix-support/binaries-metadata.json \
+            --cargo-metadata ${metadataFile} \
+            --workspace-remap ${workspaceSrc} \
+            ${lib.escapeShellArgs extraArgs} |& tee nextest.log
 
-        runHook postCheck
-      '';
+          runHook postCheck
+        '';
 
-      installPhase = ''
-        runHook preInstall
-        cp nextest.log $out
-        runHook postInstall
-      '';
+        installPhase = ''
+          runHook preInstall
+          cp nextest.log $out
+          runHook postInstall
+        '';
 
-      passthru = {
-        inherit testsDrv;
-        withArgs = extra: mkRun (args // { extraArgs = extra; });
-      };
-    };
+        passthru = {
+          inherit testsDrv;
+          withArgs = extra: mkRun (args // { extraArgs = extra; });
+        };
+      }
+      // lib.optionalAttrs (src != null) { inherit src; }
+    );
 in
 {
   inherit metadataFile mkMetadataFile;
