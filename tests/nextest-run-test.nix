@@ -42,6 +42,16 @@ pkgs.runCommand "cargo-nix-plugin-nextest-run-test"
     done
     echo "PASS: nextestRun ran all test binaries"
 
+    # nextestRunFor accepts an explicit workspace source.
+    fordrv=$(nix-instantiate \
+      --option plugin-files "${plugin}/lib/nix/plugins" \
+      --expr "($cargoNixExpr).workspaceMembers.nodeps-lib.nextestRunFor ${sampleProject}")
+    forreport=$(nix-store --realize "$fordrv")
+    for id in "tests::unit" "nodeps-lib::integration" "nodeps-lib::multi"; do
+      grep -q "$id" "$forreport" || { echo "FAIL: $id not in nextestRunFor report"; exit 1; }
+    done
+    echo "PASS: nextestRunFor accepts a workspace source"
+
     # The builder records the host libdir, so nextest does not warn
     # that it failed to detect one.
     if grep -q "failed to detect the rustc libdir" "$report"; then

@@ -808,7 +808,14 @@ in
 
         passthru = { inherit testsDrv; };
       };
-      # Like runTests, but via cargo-nextest (see lib/nextest.nix).
+      # Like runTests, but via cargo-nextest (see lib/nextest.nix). The
+      # default remaps to the workspace source; `nextestRunFor` lets callers
+      # pass a filtered source when they keep a per-project copy.
+      nextestRunFor =
+        workspaceSrc:
+        nextest.mkRun {
+          inherit name testsDrv workspaceSrc;
+        };
       nextestRun = nextest.mkRun {
         inherit name testsDrv;
         workspaceSrc = src;
