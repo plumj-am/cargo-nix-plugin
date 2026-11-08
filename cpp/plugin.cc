@@ -60,8 +60,8 @@ static std::string remapStorePath(Store &store, const std::string &path) {
     return realStoreDir + path.substr(logicalStoreDir.size());
 }
 
-static void prim_resolveCargoWorkspace(EvalState &state, const PosIdx pos,
-                                        Value **args, Value &v) {
+static void resolveCargoWorkspaceImpl(EvalState &state, PosIdx pos,
+                                       Value *const *args, Value &v) {
     state.forceAttrs(*args[0], pos,
         "while evaluating the argument to builtins.resolveCargoWorkspace");
 
@@ -107,11 +107,31 @@ static void prim_resolveCargoWorkspace(EvalState &state, const PosIdx pos,
     parseJSON(state, result, v);
 }
 
-static void prim_cargoNixApiLevel(EvalState &, const PosIdx, Value **, Value &v) {
+static void cargoNixApiLevelImpl(Value &v) {
     v.mkInt(cargo_nix_api_level());
 }
 
-// Nix >=2.34 renamed PrimOp::fun to PrimOp::impl (see CMakeLists.txt).
+#ifdef NIX_PRIMOP_CALLSITE
+static void prim_resolveCargoWorkspace(EvalState &state, CallSite callSite,
+                                        Value *const *args, Value &v) {
+    resolveCargoWorkspaceImpl(state, callSite.pos, args, v);
+}
+
+static void prim_cargoNixApiLevel(EvalState &, CallSite, Value *const *, Value &v) {
+    cargoNixApiLevelImpl(v);
+}
+#else
+static void prim_resolveCargoWorkspace(EvalState &state, PosIdx pos,
+                                        Value **args, Value &v) {
+    resolveCargoWorkspaceImpl(state, pos, args, v);
+}
+
+static void prim_cargoNixApiLevel(EvalState &, PosIdx, Value **, Value &v) {
+    cargoNixApiLevelImpl(v);
+}
+#endif
+
+// Nix >=2.34 names the implementation field PrimOp::impl.
 static RegisterPrimOp rp(PrimOp {
     .name = "resolveCargoWorkspace",
     .args = {"attrs"},
@@ -125,11 +145,7 @@ static RegisterPrimOp rp(PrimOp {
       - `target`: Attrset describing the target platform
       - `rootFeatures` (optional): List of features to enable (defaults to `["default"]`)
     )",
-#ifdef NIX_PRIMOP_HAS_IMPL
     .impl = prim_resolveCargoWorkspace,
-#else
-    .fun = prim_resolveCargoWorkspace,
-#endif
 });
 
 // Internal probe so lib/ can detect a skewed .so before calling
@@ -140,9 +156,5 @@ static RegisterPrimOp rpApiLevel(PrimOp {
     .args = {},
     .arity = 0,
     .doc = "Internal: contract version of the loaded cargo-nix-plugin resolver.",
-#ifdef NIX_PRIMOP_HAS_IMPL
     .impl = prim_cargoNixApiLevel,
-#else
-    .fun = prim_cargoNixApiLevel,
-#endif
 });
