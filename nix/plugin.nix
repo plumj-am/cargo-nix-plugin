@@ -23,12 +23,7 @@ assert enableSanitizers -> stdenv.cc.isClang;
 assert enableSanitizers -> stdenv.hostPlatform.isLinux;
 
 let
-  rustLib = rustPlatform.buildRustPackage {
-    pname = "cargo-nix-plugin-core";
-    version = "0.1.0";
-    src = ../rust;
-    cargoLock.lockFile = ../rust/Cargo.lock;
-  };
+  rustLib = import ./rust.nix { inherit lib rustPlatform; };
 in
 stdenv.mkDerivation {
   pname = "cargo-nix-plugin";
@@ -64,7 +59,7 @@ stdenv.mkDerivation {
 
   meta = {
     description = "Nix plugin for resolving Cargo workspaces";
-    license = lib.licenses.mit;
+    license = lib.licenses.asl20;
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };
 }

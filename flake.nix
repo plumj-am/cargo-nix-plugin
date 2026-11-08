@@ -213,6 +213,8 @@
         // perVersionPackages pkgs
       );
 
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = [
@@ -221,7 +223,18 @@
             pkgs.rust-analyzer
             pkgs.clippy
             pkgs.rustfmt
+            pkgs.cargo-nextest
+            pkgs.cmake
+            pkgs.pkg-config
+            pkgs.boost
+            pkgs.nlohmann_json
+            pkgs.nixVersions.nix_2_35
+            pkgs.nixfmt-rfc-style
           ];
+          shellHook = ''
+            echo "cargo-nix-plugin devshell: nix build .#cargo-nix-plugin"
+            echo "Run nix flake check for the full matrix."
+          '';
         };
       });
 

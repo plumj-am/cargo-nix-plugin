@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 {
+  lib,
   rustPlatform,
 }:
 
@@ -11,4 +12,10 @@ rustPlatform.buildRustPackage {
   src = ../builder;
   cargoLock.lockFile = ../builder/Cargo.lock;
   doCheck = true;
+
+  meta = {
+    description = "Rust-native buildRustCrate phase runner";
+    license = lib.licenses.asl20;
+    platforms = lib.platforms.linux ++ lib.platforms.darwin;
+  };
 }

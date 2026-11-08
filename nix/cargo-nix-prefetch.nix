@@ -2,20 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 {
+  lib,
+  pkgs,
   rustPlatform,
 }:
 
-rustPlatform.buildRustPackage {
-  pname = "cargo-nix-prefetch";
-  version = "0.1.0";
-  src = ../rust;
-  cargoLock.lockFile = ../rust/Cargo.lock;
-  cargoBuildFlags = [
-    "--bin"
-    "cargo-nix-prefetch"
-  ];
-  doCheck = false;
-
-  meta.description = "Warm the sparse registry index cache for a Cargo workspace";
-  meta.mainProgram = "cargo-nix-prefetch";
-}
+let
+  rust = import ./rust.nix { inherit lib rustPlatform; };
+in
+pkgs.runCommand "cargo-nix-prefetch"
+  {
+    meta = {
+      description = "Warm the sparse registry index cache for a Cargo workspace";
+      license = lib.licenses.asl20;
+      platforms = lib.platforms.linux ++ lib.platforms.darwin;
+      mainProgram = "cargo-nix-prefetch";
+    };
+  }
+  ''
+    mkdir -p $out/bin
+    ln -s ${rust}/bin/cargo-nix-prefetch $out/bin/cargo-nix-prefetch
+  ''
