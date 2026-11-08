@@ -96,5 +96,28 @@ EOF
         target = $target;
       }"
 
+    expect_error \
+      "metadata with rootFeatures" \
+      "rootFeatures and noDefaultFeatures require lockfile-resolve mode" \
+      "builtins.resolveCargoWorkspace {
+        metadata = builtins.readFile \"${testFixtures}/metadata.json\";
+        cargoLock = builtins.readFile \"${testFixtures}/Cargo.lock\";
+        target = $target;
+        rootFeatures = [ \"serde\" ];
+      }"
+
+    expect_error \
+      "wrapper metadata with rootFeatures" \
+      "rootFeatures and noDefaultFeatures require lockfile-resolve mode" \
+      "let
+        cargoNix = import ${../lib} {
+          pkgs = import ${pkgs.path} { system = \"${pkgs.stdenv.hostPlatform.system}\"; };
+          metadata = builtins.readFile \"${testFixtures}/metadata.json\";
+          cargoLock = builtins.readFile \"${testFixtures}/Cargo.lock\";
+          src = /dev/null;
+          rootFeatures = [ \"serde\" ];
+        };
+      in cargoNix.resolved"
+
     touch $out
   ''

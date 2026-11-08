@@ -90,6 +90,14 @@ fn validate_and_resolve(input: &PluginInput) -> Result<crate::resolve::Workspace
         ),
         // Mode 1: explicit cargo metadata JSON
         (Some(metadata), None) => {
+            if !input.root_features.is_empty() || input.no_default_features {
+                return Err(
+                    "rootFeatures and noDefaultFeatures require lockfile-resolve mode; \
+                     bake the feature selection into metadata with \
+                     `cargo metadata --features ...`"
+                        .to_string(),
+                );
+            }
             let cargo_lock = input
                 .cargo_lock
                 .as_deref()

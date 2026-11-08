@@ -321,7 +321,11 @@ let
       cratePkgs: _isHost: defaultBuildRustCrateForPkgs cratePkgs;
 
   # Call the plugin builtin — auto-detect mode based on metadata presence
-  resolved = apiLevelGuard builtins.resolveCargoWorkspace (
+  resolved = lib.throwIf (metadata != null && (rootFeatures != [ ] || noDefaultFeatures)) ''
+    cargo-nix-plugin: rootFeatures and noDefaultFeatures require lockfile-resolve mode.
+    Bake the feature selection into `metadata` with
+    `cargo metadata --features ...`, or omit `metadata`.
+  '' (apiLevelGuard builtins.resolveCargoWorkspace (
     {
       target = resolvedTarget;
       inherit rootFeatures noDefaultFeatures;
@@ -339,7 +343,7 @@ let
     )
     // lib.optionalAttrs (gitSources' != { }) { gitSources = gitSources'; }
     // lib.optionalAttrs allowExternalPathDeps { inherit allowExternalPathDeps; }
-  );
+  ));
 
   # Union of all workspace members' features, used as rootFeatures for
   # the all-features re-resolve. The resolver drops features unknown to
