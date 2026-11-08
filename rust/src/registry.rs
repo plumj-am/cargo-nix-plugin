@@ -986,8 +986,27 @@ pub fn is_cached(cargo_home: &Path, url: &str, name: &str, version: &str) -> boo
     let Ok(krate_name) = KrateName::crates_io(name) else {
         return false;
     };
-    cached_in_existing_dir(cargo_home, url, krate_name)
-        .is_some_and(|k| find_version(&k, version).is_some())
+    let key = (
+        cargo_home.to_string_lossy().into_owned(),
+        url.to_string(),
+        name.to_string(),
+    );
+    let cached = {
+        let cache = krate_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.get(&key).cloned()
+    };
+    let krate = if let Some(cached) = cached {
+        cached
+    } else {
+        let Some(fresh) = cached_in_existing_dir(cargo_home, url, krate_name) else {
+            return false;
+        };
+        cache_krate(cargo_home, url, name, &fresh);
+        fresh
+    };
+    find_version(&krate, version).is_some()
 }
 
 /// Probe for `name` in the pre-existing index dir for `url` under

@@ -165,7 +165,8 @@ pkgs.runCommand "cargo-nix-plugin-offline-build-test"
         clippyAllFeatures = true;
         localSrc = path: {
           src = if lib.hasPrefix "/" path then path else workspaceSrc;
-          workspace_member = if path == "" then "." else path;
+          workspace_member =
+            if path == "" || lib.hasPrefix "/" path then "." else path;
         };
       }
     '

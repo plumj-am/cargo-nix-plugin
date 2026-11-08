@@ -112,7 +112,10 @@ pub fn write_binaries_metadata(
     let mut targets: Vec<(String, String, String, &'static str)> = Vec::new();
     let lib_test = format!("{}-{}", config.lib_name_normalized(), config.metadata);
     targets.push((pkg.clone(), config.lib_name_normalized(), lib_test, "lib"));
-    for (name, _, _) in resolve_bins(config) {
+    for (name, _, test) in resolve_bins(config) {
+        if !test {
+            continue;
+        }
         targets.push((format!("{pkg}::bin/{name}"), name.clone(), name, "bin"));
     }
     for (name, _, harness) in resolve_tests(config) {

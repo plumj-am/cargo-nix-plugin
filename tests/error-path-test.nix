@@ -24,6 +24,7 @@ let
       rel == ""
       || rel == "/tests"
       || pkgs.lib.hasPrefix "/lib" rel
+      || pkgs.lib.hasPrefix "/builder" rel
       || pkgs.lib.hasPrefix "/nix" rel
       || pkgs.lib.hasPrefix "/tests/external-path-dep" rel
       || pkgs.lib.hasPrefix "/tests/external-path-workspace" rel;

@@ -306,7 +306,10 @@
 
           config = lib.mkIf cfg.enable {
             # Keep the host Nix and the plugin's nixComponents in lockstep.
-            nix.package = lib.mkDefault pkgs.nixVersions.${defaultNixBinary};
+            # Use the flake's locked nixpkgs, not the consumer's, so the
+            # exact-version guard sees the same patch release.
+            nix.package = lib.mkDefault
+              self.inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}.nixVersions.${defaultNixBinary};
             nix.settings.plugin-files = lib.mkAfter [
               "${cfg.package}/lib/nix/plugins"
             ];

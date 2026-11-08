@@ -81,7 +81,7 @@ let
         target "lib" libCrateTypes (info.libName or (underscore name)) libPath { doctest = true; }
       );
 
-      explicitBins = map (b: target "bin" [ "bin" ] b.name b.path { }) info.crateBin;
+      explicitBins = map (b: target "bin" [ "bin" ] b.name b.path { test = b.test or true; }) info.crateBin;
       # Cargo dedupes auto-discovered bins against explicit [[bin]]
       # entries by name or by path.
       explicitNames = map (b: b.name) info.crateBin;
