@@ -254,9 +254,19 @@
             nix = pkgs.nixVersions.${cfg.binary};
             plugin = mkPlugin pkgs components;
             tests = mkTests pkgs plugin nix;
+            sanitizedTests = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
+              mkTests pkgs (mkPluginSanitized pkgs components) nix
+            );
           in
-          acc // nixpkgs.lib.mapAttrs' (name: drv: nixpkgs.lib.nameValuePair "${name}-nix_${ver}" drv) tests
+          acc
+          // nixpkgs.lib.mapAttrs' (name: drv: nixpkgs.lib.nameValuePair "${name}-nix_${ver}" drv) tests
+          // nixpkgs.lib.mapAttrs' (
+            name: drv: nixpkgs.lib.nameValuePair "${name}-ubsan-nix_${ver}" drv
+          ) sanitizedTests
         ) { } (builtins.attrNames nixVersions)
+        // {
+          cargo-compat-test = pkgs.callPackage ./tests/cargo-compat-test.nix { };
+        }
       );
 
       lib = import ./lib;

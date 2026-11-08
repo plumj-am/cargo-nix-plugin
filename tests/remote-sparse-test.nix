@@ -107,5 +107,51 @@ pkgs.runCommand "cargo-nix-plugin-remote-sparse-test"
       exit 1
     fi
 
+    # Concurrent cold evals sharing one CARGO_HOME: atomic cache writes must
+    # not race, and every process must resolve successfully.
+    COLD_HOME=$(mktemp -d)
+    pids=()
+    for i in 1 2 3 4; do
+      CARGO_HOME="$COLD_HOME" nix-instantiate --eval --strict --json --read-write-mode \
+        --option plugin-files ${plugin}/lib/nix/plugins \
+        --expr "
+          let
+            pkgs = import ${pkgs.path} { system = \"${pkgs.stdenv.hostPlatform.system}\"; };
+            cargoNix = import ${pluginSrc}/lib {
+              inherit pkgs;
+              manifestPath = \"$WORKSPACE/Cargo.toml\";
+            };
+          in builtins.length (builtins.attrNames cargoNix.resolved.crates)
+        " > "$TMPDIR/concurrent.$i.json" 2> "$TMPDIR/concurrent.$i.err" &
+      pids+=($!)
+    done
+
+    failed=0
+    for pid in ''${pids[@]}; do
+      if ! wait "$pid"; then failed=1; fi
+    done
+    if [ "$failed" -ne 0 ]; then
+      echo "FAIL: concurrent eval failed"
+      cat "$TMPDIR"/concurrent.*.err
+      exit 1
+    fi
+    for i in 1 2 3 4; do
+      jq -e 'type == "number" and . > 0' "$TMPDIR/concurrent.$i.json" > /dev/null
+    done
+
+    # The shared cache must remain usable after the concurrent writers.
+    CARGO_HOME="$COLD_HOME" nix-instantiate --eval --strict --json --read-write-mode \
+      --option plugin-files ${plugin}/lib/nix/plugins \
+      --expr "
+        let
+          pkgs = import ${pkgs.path} { system = \"${pkgs.stdenv.hostPlatform.system}\"; };
+          cargoNix = import ${pluginSrc}/lib {
+            inherit pkgs;
+            manifestPath = \"$WORKSPACE/Cargo.toml\";
+          };
+        in builtins.length (builtins.attrNames cargoNix.resolved.crates)
+      " > "$TMPDIR/after.json"
+    jq -e 'type == "number" and . > 0' "$TMPDIR/after.json" > /dev/null
+
     mv result.json $out
   ''
