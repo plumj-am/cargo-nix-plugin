@@ -40,7 +40,11 @@ pkgs.runCommand "cargo-nix-plugin-nextest-run-test"
     for id in "tests::unit" "nodeps-lib::integration" "nodeps-lib::multi"; do
       grep -q "$id" "$report" || { echo "FAIL: $id not in report"; exit 1; }
     done
-    echo "PASS: nextestRun ran all test binaries"
+    if grep -q "nodeps-no-test" "$report"; then
+      echo "FAIL: [[bin]] test = false target appeared in nextest report"
+      exit 1
+    fi
+    echo "PASS: nextestRun ran all test binaries and skipped test = false bins"
 
     # nextestRunFor accepts an explicit workspace source.
     fordrv=$(nix-instantiate \

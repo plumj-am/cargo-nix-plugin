@@ -151,6 +151,9 @@ pub struct CrateBin {
     pub path: Option<String>,
     #[serde(default)]
     pub required_features: Vec<String>,
+    /// `[[bin]] test = false` disables the libtest harness for this target.
+    #[serde(default)]
+    pub test: Option<bool>,
 }
 
 /// `[[test]]` target from Cargo.toml. Unlike CrateBin this is never supplied

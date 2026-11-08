@@ -180,7 +180,7 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
         // Point CARGO_BIN_EXE_* at the installed $out/bin (sandbox path is
         // gone by the time tests run).
         let out = config.out_path();
-        for (name, _) in &bins {
+        for (name, _, _) in &bins {
             test_env.push((format!("CARGO_BIN_EXE_{name}"), format!("{out}/bin/{name}")));
         }
     }
@@ -194,16 +194,18 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     // Metadata mode type-checks terminal targets without producing executables.
     // Other modes build real binaries so CARGO_BIN_EXE_<name> resolves.
-    for (name, path) in &bins {
+    for (name, path, _) in &bins {
         bb.build(name, path, BinKind::Bin)?;
     }
 
     if config.build_tests {
         // Also build each bin as a --test harness (under $out/tests/) so
         // #[test] fns in src/main.rs / src/bin/ run; cargo tests [[bin]]
-        // targets by default. Real bins stay under $out/bin/.
-        // TODO: skip bins with [[bin]] test=false once resolve_bins carries it.
-        for (name, path) in &bins {
+        // targets by default. `test = false` disables that harness.
+        for (name, path, test) in &bins {
+            if !test {
+                continue;
+            }
             bb.build(name, path, BinKind::Test { harness: true })?;
         }
         for (name, path, harness) in resolve_tests(config) {
@@ -387,7 +389,7 @@ pub(super) fn resolve_lib_path(config: &BuildConfig) -> Option<String> {
     }
 }
 
-pub(super) fn resolve_bins(config: &BuildConfig) -> Vec<(String, String)> {
+pub(super) fn resolve_bins(config: &BuildConfig) -> Vec<(String, String, bool)> {
     let mut bins = Vec::new();
 
     if !config.crate_bin.is_empty() {
@@ -396,6 +398,7 @@ pub(super) fn resolve_bins(config: &BuildConfig) -> Vec<(String, String)> {
                 .name
                 .clone()
                 .unwrap_or_else(|| config.crate_name.clone());
+            let test = bin.test.unwrap_or(true);
 
             // Skip binaries missing required features
             if !bin.required_features.is_empty()
@@ -411,10 +414,10 @@ pub(super) fn resolve_bins(config: &BuildConfig) -> Vec<(String, String)> {
                 continue;
             }
 
-            if let Some(ref path) = bin.path {
-                bins.push((name, path.clone()));
+            if let Some(path) = &bin.path {
+                bins.push((name, path.clone(), test));
             } else if let Some(path) = search_bin_path(&name, &config.lib_path, &config.lib_name) {
-                bins.push((name, path));
+                bins.push((name, path, test));
             } else {
                 eprintln!(
                     "\x1b[0;1;31mERROR: failed to find file for binary target: {name}\x1b[0m"
@@ -424,7 +427,11 @@ pub(super) fn resolve_bins(config: &BuildConfig) -> Vec<(String, String)> {
         }
     } else if !config.has_crate_bin && config.autobins {
         // No [[bin]] and no Nix crateBin: pure inference.
-        bins.extend(super::configure::inferred_bins(&config.crate_name));
+        bins.extend(
+            super::configure::inferred_bins(&config.crate_name)
+                .into_iter()
+                .map(|(name, path)| (name, path, true)),
+        );
     }
     bins
 }

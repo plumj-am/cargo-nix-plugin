@@ -136,6 +136,12 @@ pub enum SourceInfo {
 pub struct BinTarget {
     pub name: String,
     pub path: String,
+    #[serde(default = "default_true")]
+    pub test: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Normalize package name: replace hyphens with underscores (as cargo does).
@@ -298,6 +304,7 @@ pub fn resolve_workspace(
                     BinTarget {
                         name: t.name.clone(),
                         path,
+                        test: t.test,
                     }
                 })
                 .collect()

@@ -907,10 +907,12 @@ pub fn detect_cargo_toml_info(config: &mut BuildConfig) {
                             .collect()
                     })
                     .unwrap_or_default();
+                let test = bin.get("test").and_then(|v| v.as_bool());
                 config.crate_bin.push(super::config::CrateBin {
                     name,
                     path,
                     required_features,
+                    test,
                 });
             }
         }
@@ -926,6 +928,7 @@ pub fn detect_cargo_toml_info(config: &mut BuildConfig) {
                         name: Some(name),
                         path: Some(path),
                         required_features: Vec::new(),
+                        test: None,
                     });
                 }
             }

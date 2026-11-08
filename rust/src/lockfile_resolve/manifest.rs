@@ -369,6 +369,7 @@ fn parse_member_manifest(
                     Some(BinTarget {
                         name: name.to_string(),
                         path: path.to_string(),
+                        test: item.get("test").and_then(|v| v.as_bool()).unwrap_or(true),
                     })
                 })
                 .collect()

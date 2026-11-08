@@ -2,3 +2,10 @@
 name = "nodeps-lib"
 version = "0.1.0"
 edition = "2021"
+
+# Regression: `test = false` must suppress the libtest harness and nextest
+# target for this bin.
+[[bin]]
+name = "nodeps-no-test"
+path = "src/bin/nodeps-no-test.rs"
+test = false
