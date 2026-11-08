@@ -249,6 +249,10 @@ let
     windows = platform.isWindows;
   };
 
+  makeResolvedTarget = platform: (makeDefaultTarget platform) // {
+    extra_cfgs = extraCfgs;
+  };
+
   resolvedTarget = (if target != null then target else defaultTarget) // {
     extra_cfgs = extraCfgs;
   };
@@ -332,15 +336,14 @@ let
     else
       cratePkgs: _isHost: defaultBuildRustCrateForPkgs cratePkgs;
 
-  # Call the plugin builtin — auto-detect mode based on metadata presence
-  resolved = lib.throwIf (metadata != null && (rootFeatures != [ ] || noDefaultFeatures)) ''
-    cargo-nix-plugin: rootFeatures and noDefaultFeatures require lockfile-resolve mode.
-    Bake the feature selection into `metadata` with
-    `cargo metadata --features ...`, or omit `metadata`.
-  '' (apiLevelGuard builtins.resolveCargoWorkspace (
+  # Single construction for every resolve call so host, build, and clippy
+  # graphs cannot drift apart.
+  mkResolveArgs =
+    resolveTarget: features: featuresNoDefault:
     {
-      target = resolvedTarget;
-      inherit rootFeatures noDefaultFeatures;
+      target = resolveTarget;
+      rootFeatures = features;
+      noDefaultFeatures = featuresNoDefault;
     }
     // (
       if metadata != null then
@@ -354,8 +357,33 @@ let
         // lib.optionalAttrs (cargoHome != null) { inherit cargoHome; }
     )
     // lib.optionalAttrs (gitSources' != { }) { gitSources = gitSources'; }
-    // lib.optionalAttrs allowExternalPathDeps { inherit allowExternalPathDeps; }
-  ));
+    // lib.optionalAttrs allowExternalPathDeps { inherit allowExternalPathDeps; };
+
+  featureGuard = lib.throwIf (metadata != null && (rootFeatures != [ ] || noDefaultFeatures)) ''
+    cargo-nix-plugin: rootFeatures and noDefaultFeatures require lockfile-resolve mode.
+    Bake the feature selection into `metadata` with
+    `cargo metadata --features ...`, or omit `metadata`.
+  '';
+
+  # Call the plugin builtin — auto-detect mode based on metadata presence
+  resolved = featureGuard (
+    apiLevelGuard builtins.resolveCargoWorkspace (
+      mkResolveArgs resolvedTarget rootFeatures noDefaultFeatures
+    )
+  );
+
+  # Build scripts, proc-macros, and their closures use the build platform's
+  # cfg set. Native builds reuse the host resolution; cross builds resolve
+  # again against `stdenv.buildPlatform`.
+  buildResolved =
+    if stdenv.buildPlatform.system == stdenv.hostPlatform.system then
+      resolved
+    else
+      featureGuard (
+        apiLevelGuard builtins.resolveCargoWorkspace (
+          mkResolveArgs (makeResolvedTarget stdenv.buildPlatform) rootFeatures noDefaultFeatures
+        )
+      );
 
   # Union of all workspace members' features, used as rootFeatures for
   # the all-features re-resolve. The resolver drops features unknown to
@@ -379,15 +407,27 @@ let
         ''
         (
           apiLevelGuard builtins.resolveCargoWorkspace (
-            {
-              target = resolvedTarget;
-              rootFeatures = allWorkspaceFeatures;
-              noDefaultFeatures = false;
-              manifestPath = if manifestPath != null then manifestPath else "${src}/Cargo.toml";
-            }
-            // lib.optionalAttrs (cargoHome != null) { inherit cargoHome; }
-            // lib.optionalAttrs (gitSources' != { }) { gitSources = gitSources'; }
-            // lib.optionalAttrs allowExternalPathDeps { inherit allowExternalPathDeps; }
+            mkResolveArgs resolvedTarget allWorkspaceFeatures false
+          )
+        );
+
+  clippyBuildResolved =
+    if stdenv.buildPlatform.system == stdenv.hostPlatform.system then
+      clippyResolved
+    else if !clippyAllFeatures then
+      buildResolved
+    else
+      lib.throwIf (metadata != null)
+        ''
+          clippyAllFeatures is only supported in lockfile-resolve mode
+          (omit `metadata`).
+        ''
+        (
+          apiLevelGuard builtins.resolveCargoWorkspace (
+            mkResolveArgs
+              (makeResolvedTarget stdenv.buildPlatform)
+              allWorkspaceFeatures
+              false
           )
         );
 
@@ -471,9 +511,9 @@ let
   # Build a crate using buildRustCrate
   # Memoization via the `self` pattern (builtByPackageId)
   mkBuiltByPackageIdByPkgs =
-    # resolved' is threaded so the clippy path can substitute an
-    # all-features resolution without touching the normal build.
-    resolved': cratePkgs: isHost:
+    # resolved' is the host graph; buildResolved' is the build-platform
+    # resolution used for build scripts and proc-macros.
+    resolved': buildResolved': cratePkgs: isHost:
     let
       buildRustCrate =
         let
@@ -498,9 +538,9 @@ let
         # same transitive closure with `crates` because both variants route dep
         # edges through here — no duplicate work, just different roots.
         cratesLibOnly = mkCrates true;
-        target = makeDefaultTarget cratePkgs.stdenv.hostPlatform;
         # Host graph (build scripts, proc-macros, closures): isHost = true.
-        build = mkBuiltByPackageIdByPkgs resolved' cratePkgs.buildPackages true;
+        # Uses the build-platform resolution even when cratePkgs is spliced.
+        build = mkBuiltByPackageIdByPkgs buildResolved' buildResolved' cratePkgs.buildPackages true;
       };
     in
     self;
@@ -615,7 +655,7 @@ let
       }
     );
 
-  builtCrates = mkBuiltByPackageIdByPkgs resolved pkgs false;
+  builtCrates = mkBuiltByPackageIdByPkgs resolved buildResolved pkgs false;
 
   # --- Clippy support ---
   # clippy-driver is a drop-in replacement for rustc.  We build a small
@@ -673,9 +713,9 @@ let
   # re-resolution changed their feature set, they are the same store paths
   # as the normal build.
   mkClippyBuiltByPkgs =
-    resolved': cratePkgs: isHost:
+    resolved': buildResolved': cratePkgs: isHost:
     let
-      normalBuilt = mkBuiltByPackageIdByPkgs resolved' cratePkgs isHost;
+      normalBuilt = mkBuiltByPackageIdByPkgs resolved' buildResolved' cratePkgs isHost;
 
       # Normal buildRustCrate for dependencies (fully cached)
       normalBuildRustCrate =
@@ -719,15 +759,14 @@ let
             normalBuilt.cratesLibOnly.${packageId}
         ) resolved'.crates;
         cratesLibOnly = normalBuilt.cratesLibOnly;
-        target = makeDefaultTarget cratePkgs.stdenv.hostPlatform;
         # Build-platform workspace roots also use clippy; their dependency
         # edges still resolve through the normal lib-only graph above.
-        build = mkClippyBuiltByPkgs resolved' cratePkgs.buildPackages true;
+        build = mkClippyBuiltByPkgs buildResolved' buildResolved' cratePkgs.buildPackages true;
       };
     in
     self;
 
-  clippyCrates = mkClippyBuiltByPkgs clippyResolved pkgs false;
+  clippyCrates = mkClippyBuiltByPkgs clippyResolved clippyBuildResolved pkgs false;
 
   clippyReport = pkgs.runCommand "all-workspace-members-clippy-report" { } ''
     mkdir -p "$out"
