@@ -61,6 +61,25 @@ pkgs.runCommand "cargo-nix-plugin-error-path-test"
       }
     }
 
+    nix_eval_no_plugin() {
+      nix-instantiate --eval --strict --read-write-mode --expr "$1"
+    }
+
+    expect_error_no_plugin() {
+      local label="$1"
+      local pattern="$2"
+      local expr="$3"
+      if nix_eval_no_plugin "$expr" > "$TMPDIR/stdout" 2> "$TMPDIR/stderr"; then
+        echo "FAIL: $label unexpectedly succeeded"
+        exit 1
+      fi
+      grep -Fq "$pattern" "$TMPDIR/stderr" || {
+        echo "FAIL: $label missing '$pattern':"
+        sed -n '1,20p' "$TMPDIR/stderr"
+        exit 1
+      }
+    }
+
     target='{
       name = "x86_64-unknown-linux-gnu";
       os = "linux";
@@ -79,6 +98,18 @@ pkgs.runCommand "cargo-nix-plugin-error-path-test"
       "missing resolve mode" \
       "Provide either 'metadata'" \
       "builtins.resolveCargoWorkspace { target = $target; }"
+
+    expect_error_no_plugin \
+      "missing plugin" \
+      "builtins.resolveCargoWorkspace is not loaded" \
+      "let
+        cargoNix = import ${repo}/lib {
+          pkgs = import ${pkgs.path} { system = \"${pkgs.stdenv.hostPlatform.system}\"; };
+          metadata = builtins.readFile \"${testFixtures}/metadata.json\";
+          cargoLock = builtins.readFile \"${testFixtures}/Cargo.lock\";
+          src = /dev/null;
+        };
+      in cargoNix.resolved"
 
     expect_error \
       "malformed metadata" \

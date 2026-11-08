@@ -24,7 +24,6 @@ let
 
   result = builtins.resolveCargoWorkspace {
     inherit metadata cargoLock target;
-    rootFeatures = [ "default" ];
   };
 
   crateCount = builtins.length (builtins.attrNames result.crates);

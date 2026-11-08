@@ -149,6 +149,10 @@
   # src another way (a `buildRustCrateForPkgs` interceptor keyed on
   # `args.crateName`; `localSrc` gets relPath="" for these).
   allowExternalPathDeps ? false,
+  # Optional: bypass the plugin/Nix version guard. Use only when the plugin
+  # cannot report its build version (older than the probe) but is known
+  # compatible with the evaluating Nix.
+  allowVersionMismatch ? false,
   # Registry crates to force-treat as proc-macros. The sparse index has
   # no crate-type field, so lockfile-mode resolves them as `procMacro =
   # false`, mis-routing them into the target graph under an isHost
@@ -163,21 +167,61 @@ let
   apiLevel = 4;
 
   # Probe the loaded plugin before calling it so skew surfaces as a
-  # clear message, not a serde/attr error. `or 0` covers plugins
-  # predating the primop. Warn-only until the first real bump.
+  # clear message, not a serde/attr error. `or 0`/`or null` cover plugins
+  # predating the probes.
   resolverApiLevel = builtins.cargoNixApiLevel or 0;
-  apiLevelGuard =
-    if resolverApiLevel == apiLevel then
+  compiledNixVersion = builtins.cargoNixNixVersion or null;
+  nixVersionsMatch = compiledNixVersion == null || compiledNixVersion == builtins.nixVersion;
+
+  matchingPluginAttr = ".#cargo-nix-plugin-nix_${
+    lib.replaceStrings [ "." ] [ "_" ] (lib.versions.majorMinor builtins.nixVersion)
+  }";
+
+  pluginGuard =
+    if builtins ? resolveCargoWorkspace then
       x: x
     else
-      lib.warn ''
-        cargo-nix-plugin: API level mismatch.
-          nix builtin resolver = ${toString resolverApiLevel}
-          lib/default.nix      = ${toString apiLevel}
-        Your nix was built against a different cargo-nix-plugin revision
-        than the lib/ you are evaluating. Rebuild/reload the plugin
-        against this checkout.
+      throw ''
+        cargo-nix-plugin: builtins.resolveCargoWorkspace is not loaded.
+        Nix evaluating this expression: ${builtins.nixVersion}
+        Load `plugin-files` from ${matchingPluginAttr} built from this
+        checkout, or from a plugin built for the same Nix version.
       '';
+
+  apiLevelGuard =
+    if allowVersionMismatch then
+      x: x
+    else
+      x:
+      if resolverApiLevel == apiLevel && nixVersionsMatch then
+        x
+      else
+        throw ''
+          cargo-nix-plugin: plugin version mismatch.
+            lib/default.nix apiLevel = ${toString apiLevel}
+            loaded plugin apiLevel  = ${toString resolverApiLevel}
+            plugin compiled for Nix = ${
+              if compiledNixVersion == null then "unknown (plugin predates the probe)" else compiledNixVersion
+            }
+            Nix evaluating          = ${builtins.nixVersion}
+          Load ${matchingPluginAttr} built from this checkout and the
+          same Nix version, or set allowVersionMismatch = true to bypass.
+        '';
+
+  resultApiGuard =
+    x:
+    if (x.apiLevel or 0) == apiLevel || allowVersionMismatch then
+      x
+    else
+      throw ''
+        cargo-nix-plugin: resolver result mismatch.
+          lib/default.nix apiLevel = ${toString apiLevel}
+          resolver result apiLevel = ${toString (x.apiLevel or 0)}
+        Rebuild the plugin from this checkout, or set
+        allowVersionMismatch = true to bypass.
+      '';
+
+  guardResolve = x: resultApiGuard (pluginGuard (apiLevelGuard x));
 
   # Build the target description from stdenv if not provided
   defaultTarget = makeDefaultTarget stdenv.hostPlatform;
@@ -367,8 +411,10 @@ let
 
   # Call the plugin builtin — auto-detect mode based on metadata presence
   resolved = featureGuard (
-    apiLevelGuard builtins.resolveCargoWorkspace (
-      mkResolveArgs resolvedTarget rootFeatures noDefaultFeatures
+    guardResolve (
+      builtins.resolveCargoWorkspace (
+        mkResolveArgs resolvedTarget rootFeatures noDefaultFeatures
+      )
     )
   );
 
@@ -380,8 +426,10 @@ let
       resolved
     else
       featureGuard (
-        apiLevelGuard builtins.resolveCargoWorkspace (
-          mkResolveArgs (makeResolvedTarget stdenv.buildPlatform) rootFeatures noDefaultFeatures
+        guardResolve (
+          builtins.resolveCargoWorkspace (
+            mkResolveArgs (makeResolvedTarget stdenv.buildPlatform) rootFeatures noDefaultFeatures
+          )
         )
       );
 
@@ -406,8 +454,10 @@ let
           (omit `metadata`).
         ''
         (
-          apiLevelGuard builtins.resolveCargoWorkspace (
-            mkResolveArgs resolvedTarget allWorkspaceFeatures false
+          guardResolve (
+            builtins.resolveCargoWorkspace (
+              mkResolveArgs resolvedTarget allWorkspaceFeatures false
+            )
           )
         );
 
@@ -423,11 +473,13 @@ let
           (omit `metadata`).
         ''
         (
-          apiLevelGuard builtins.resolveCargoWorkspace (
-            mkResolveArgs
-              (makeResolvedTarget stdenv.buildPlatform)
-              allWorkspaceFeatures
-              false
+          guardResolve (
+            builtins.resolveCargoWorkspace (
+              mkResolveArgs
+                (makeResolvedTarget stdenv.buildPlatform)
+                allWorkspaceFeatures
+                false
+            )
           )
         );
 

@@ -12,6 +12,7 @@
   nlohmann_json,
   llvmPackages ? null,
   enableSanitizers ? false,
+  nixVersion ? nixComponents.version or "unknown",
 }:
 
 assert enableSanitizers -> llvmPackages != null;
@@ -49,6 +50,7 @@ stdenv.mkDerivation {
 
   cmakeFlags = [
     "-DRUST_LIB_DIR=${rustLib}/lib"
+    "-DNIX_COMPILE_VERSION=${nixVersion}"
   ]
   ++ lib.optionals enableSanitizers [
     "-DENABLE_SANITIZERS=ON"

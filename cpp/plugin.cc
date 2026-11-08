@@ -20,6 +20,10 @@
 #include <nix/store/local-fs-store.hh>
 #include <nlohmann/json.hpp>
 
+#ifndef NIX_COMPILE_VERSION
+#define NIX_COMPILE_VERSION "unknown"
+#endif
+
 // Rust FFI declarations
 extern "C" {
     int resolve_cargo_workspace(
@@ -111,6 +115,10 @@ static void cargoNixApiLevelImpl(Value &v) {
     v.mkInt(cargo_nix_api_level());
 }
 
+static void cargoNixNixVersionImpl(EvalState &state, Value &v) {
+    v.mkString(NIX_COMPILE_VERSION, state.mem);
+}
+
 #ifdef NIX_PRIMOP_CALLSITE
 static void prim_resolveCargoWorkspace(EvalState &state, CallSite callSite,
                                         Value *const *args, Value &v) {
@@ -120,6 +128,10 @@ static void prim_resolveCargoWorkspace(EvalState &state, CallSite callSite,
 static void prim_cargoNixApiLevel(EvalState &, CallSite, Value *const *, Value &v) {
     cargoNixApiLevelImpl(v);
 }
+
+static void prim_cargoNixNixVersion(EvalState &state, CallSite, Value *const *, Value &v) {
+    cargoNixNixVersionImpl(state, v);
+}
 #else
 static void prim_resolveCargoWorkspace(EvalState &state, PosIdx pos,
                                         Value **args, Value &v) {
@@ -128,6 +140,10 @@ static void prim_resolveCargoWorkspace(EvalState &state, PosIdx pos,
 
 static void prim_cargoNixApiLevel(EvalState &, PosIdx, Value **, Value &v) {
     cargoNixApiLevelImpl(v);
+}
+
+static void prim_cargoNixNixVersion(EvalState &state, PosIdx, Value **, Value &v) {
+    cargoNixNixVersionImpl(state, v);
 }
 #endif
 
@@ -157,4 +173,13 @@ static RegisterPrimOp rpApiLevel(PrimOp {
     .arity = 0,
     .doc = "Internal: contract version of the loaded cargo-nix-plugin resolver.",
     .impl = prim_cargoNixApiLevel,
+});
+
+// Internal probe so lib/ can reject a plugin built for another Nix version.
+static RegisterPrimOp rpNixVersion(PrimOp {
+    .name = "__cargoNixNixVersion",
+    .args = {},
+    .arity = 0,
+    .doc = "Internal: Nix version the loaded cargo-nix-plugin was compiled against.",
+    .impl = prim_cargoNixNixVersion,
 });

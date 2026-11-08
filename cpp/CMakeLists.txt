@@ -19,6 +19,11 @@ check_cxx_source_compiles("
 " NIX_PRIMOP_CALLSITE)
 
 add_library(cargo_nix_plugin MODULE plugin.cc)
+if(NIX_COMPILE_VERSION)
+  target_compile_definitions(cargo_nix_plugin PRIVATE NIX_COMPILE_VERSION="${NIX_COMPILE_VERSION}")
+else()
+  target_compile_definitions(cargo_nix_plugin PRIVATE NIX_COMPILE_VERSION="unknown")
+endif()
 target_include_directories(cargo_nix_plugin PUBLIC ${NIX_INCLUDE_DIRS})
 target_compile_options(cargo_nix_plugin PUBLIC ${NIX_CFLAGS_OTHER})
 
