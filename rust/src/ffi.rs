@@ -3,11 +3,32 @@
 
 //! C FFI interface for calling from the C++ Nix plugin shim.
 
+use std::any::Any;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::cfg_eval::TargetDescription;
 use crate::resolve::{resolve_workspace, API_LEVEL};
+
+fn c_string_lossy(text: &str) -> CString {
+    let sanitized = text.replace('\0', "\\0");
+    CString::new(sanitized).unwrap_or_else(|_| {
+        CString::new("cargo-nix-plugin: internal error").expect("static string has no NUL byte")
+    })
+}
+
+unsafe fn write_error(err_out: *mut *mut c_char, message: &str) {
+    unsafe { *err_out = c_string_lossy(message).into_raw() };
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| message.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic payload".to_string())
+}
 
 /// Expose [`API_LEVEL`] to the C++ shim for `builtins.__cargoNixApiLevel`,
 /// so lib/ can detect a skewed .so before calling the resolver.
@@ -131,34 +152,42 @@ pub unsafe extern "C" fn resolve_cargo_workspace(
     out: *mut *mut c_char,
     err_out: *mut *mut c_char,
 ) -> i32 {
-    let input_str = match unsafe { CStr::from_ptr(input_json) }.to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = CString::new(format!("Invalid UTF-8 in input: {e}")).unwrap();
-            unsafe { *err_out = msg.into_raw() };
-            return 1;
-        }
-    };
+    let resolved = catch_unwind(AssertUnwindSafe(|| {
+        let input_str = unsafe { CStr::from_ptr(input_json) }
+            .to_str()
+            .map_err(|e| format!("Invalid UTF-8 in input: {e}"))?;
+        let input: PluginInput = serde_json::from_str(input_str)
+            .map_err(|e| format!("Failed to parse plugin input: {e}"))?;
+        validate_and_resolve(&input)
+    }));
 
-    let input: PluginInput = match serde_json::from_str(input_str) {
-        Ok(v) => v,
-        Err(e) => {
-            let msg = CString::new(format!("Failed to parse plugin input: {e}")).unwrap();
-            unsafe { *err_out = msg.into_raw() };
-            return 1;
+    match resolved {
+        Ok(Ok(result)) => match serde_json::to_string(&result) {
+            Ok(json) => {
+                unsafe { *out = c_string_lossy(&json).into_raw() };
+                0
+            }
+            Err(e) => {
+                unsafe {
+                    write_error(err_out, &format!("Failed to serialize resolver output: {e}"))
+                };
+                1
+            }
+        },
+        Ok(Err(message)) => {
+            unsafe { write_error(err_out, &message) };
+            1
         }
-    };
-
-    match validate_and_resolve(&input) {
-        Ok(result) => {
-            let json = serde_json::to_string(&result).unwrap();
-            let cstr = CString::new(json).unwrap();
-            unsafe { *out = cstr.into_raw() };
-            0
-        }
-        Err(e) => {
-            let msg = CString::new(e).unwrap();
-            unsafe { *err_out = msg.into_raw() };
+        Err(payload) => {
+            unsafe {
+                write_error(
+                    err_out,
+                    &format!(
+                        "cargo-nix-plugin: resolver panicked: {}",
+                        panic_message(&*payload)
+                    ),
+                )
+            };
             1
         }
     }

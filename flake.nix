@@ -76,6 +76,11 @@
             testFixtures = ./rust/tests/fixtures;
           };
 
+          error-path-test = pkgs.callPackage ./tests/error-path-test.nix {
+            inherit plugin nix;
+            testFixtures = ./rust/tests/fixtures;
+          };
+
           torture-test = pkgs.callPackage ./tests/torture-test.nix {
             inherit plugin nix;
             testFixtures = ./rust/tests/fixtures;

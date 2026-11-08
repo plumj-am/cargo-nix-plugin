@@ -55,7 +55,7 @@ pub fn resolve_from_lockfile(
 ) -> Result<WorkspaceResult, String> {
     // 1. Parse Cargo.lock
     let lock_packages = parse_lock_packages(cargo_lock)?;
-    let lockfile_hashes = parse_lockfile(cargo_lock);
+    let lockfile_hashes = parse_lockfile(cargo_lock)?;
 
     // 2. Parse workspace manifests
     let workspace = parse_workspace(workspace_root)?;
