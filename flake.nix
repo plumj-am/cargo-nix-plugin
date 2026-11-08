@@ -195,7 +195,8 @@
           cargo-nix-plugin = defaultPlugin;
           cargo-nix-prefetch = pkgs.callPackage ./nix/cargo-nix-prefetch.nix { };
           # Optional: helper for generating metadata JSON explicitly.
-          # Not needed when using the automatic subprocess mode (just pass src).
+          # Only needed for explicit-metadata mode (`metadata` + `cargoLock`).
+          # The default `src`-only path resolves from Cargo.lock directly.
           # Useful for offline/pure evaluation workflows.
           generate-metadata = pkgs.writeShellApplication {
             name = "generate-metadata";
@@ -270,5 +271,33 @@
       );
 
       lib = import ./lib;
+
+      nixosModules.default =
+        { config, lib, pkgs, ... }:
+        let
+          cfg = config.cargo-nix-plugin;
+          defaultNixBinary = builtins.replaceStrings
+            [ "nixComponents_" ]
+            [ "nix_" ]
+            defaultNixComponents;
+        in
+        {
+          options.cargo-nix-plugin = {
+            enable = lib.mkEnableOption "cargo-nix-plugin primop";
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.cargo-nix-plugin;
+              description = "Plugin build; must match the Nix evaluating builds.";
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            # Keep the host Nix and the plugin's nixComponents in lockstep.
+            nix.package = lib.mkDefault pkgs.nixVersions.${defaultNixBinary};
+            nix.settings.plugin-files = lib.mkAfter [
+              "${cfg.package}/lib/nix/plugins"
+            ];
+          };
+        };
     };
 }

@@ -15,21 +15,56 @@ primop.
 
 ## Install
 
-Add the plugin to your Nix configuration:
+The primop must be loaded by the **Nix that evaluates your build**. Adding
+the flake input alone does not load it.
 
-```nix
-# nix.conf or via --option — point at the directory so the right
-# extension (.so/.dylib) is picked up automatically
-plugin-files = /path/to/cargo-nix-plugin/lib/nix/plugins
+Build the plugin for that Nix version (the default is built against 2.35,
+see [Compatibility](#compatibility)):
+
+```bash
+PLUGIN=$(nix build .#cargo-nix-plugin --print-out-paths)
+echo "plugin-files = $PLUGIN/lib/nix/plugins"
 ```
 
-Or use the flake output:
+Add that line to `nix.conf`, or pass it per invocation:
+
+```bash
+NIX_CONFIG="plugin-files = $PLUGIN/lib/nix/plugins" nix build .#myPackage
+```
+
+The flake input supplies `lib` and the package outputs:
 
 ```nix
 {
   inputs.cargo-nix-plugin.url = "github:anthropics/cargo-nix-plugin";
 }
 ```
+
+A consuming flake can also set `nixConfig.plugin-files`, but that only works
+for trusted flakes and makes evaluation impure. Prefer `nix.conf` for CI and
+shared machines.
+
+On NixOS, import `nixosModules.default`. It pins `nix.package` to the Nix
+version the default plugin was built against and adds `plugin-files`:
+
+```nix
+{
+  inputs.cargo-nix-plugin.url = "github:anthropics/cargo-nix-plugin";
+  # nixpkgs follows your host flake
+}
+```
+
+```nix
+nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+  modules = [
+    cargo-nix-plugin.nixosModules.default
+    { cargo-nix-plugin.enable = true; }
+  ];
+};
+```
+
+Override `cargo-nix-plugin.package` with `#cargo-nix-plugin-nix_<version>`
+when you intentionally run a different Nix version.
 
 ## Usage
 
@@ -157,6 +192,33 @@ pins one.
 The resolver is quiet by default. Set `CARGO_NIX_DEBUG=1` to get
 informational logs (mirror selection, index prefetch timings, per-crate
 retries) on stderr. Warnings and errors are always printed.
+
+## Options
+
+`import ./lib` accepts these arguments. Defaults are shown.
+
+| Option | Default | Purpose |
+|---|---|---|
+| `src` | required unless `metadata` | Workspace root containing `Cargo.toml` and `Cargo.lock` |
+| `metadata` | `null` | Explicit `cargo metadata --format-version 1 --locked` JSON |
+| `cargoLock` | `null` | `Cargo.lock` contents; required with `metadata` |
+| `manifestPath` | `src + "/Cargo.toml"` | Lockfile-mode manifest path override |
+| `target` | `stdenv.hostPlatform` | Target platform description for cfg resolution |
+| `rootFeatures` | `[ ]` | Root features, bare or `member/feature`; lockfile mode only |
+| `noDefaultFeatures` | `false` | Disable root default features; lockfile mode only |
+| `localSrc` | workspace source | Per-crate source override; receives relative paths, and absolute paths for out-of-tree deps |
+| `extraRegistries` | `{ }` | Map registry index URL to `{ dl, fetchurl ? … }` |
+| `extraCfgs` | `[ ]` | Extra bare cfg names for dependency resolution |
+| `allowExternalPathDeps` | `false` | Permit out-of-tree path deps; pair with `localSrc` |
+| `procMacroCrates` | `[ ]` | Registry crates to force-route as proc-macros |
+| `cargoHome` | `$CARGO_HOME` or `~/.cargo` | Registry index cache location |
+| `gitSources` | auto from `Cargo.lock` | Pre-fetched git checkouts keyed by `url#rev` |
+| `crateOverrides` | `null` | Passed to `buildRustCrate` |
+| `buildRustCrateForPkgs` | vendored builder | Customize instead of replace the builder |
+| `clippyArgs` | `[ ]` | Extra clippy-driver arguments |
+| `clippyCapLints` | `"forbid"` | `--cap-lints` value for clippy builds |
+| `clippyAllFeatures` | `false` | Re-resolve with every workspace feature; lockfile mode only |
+| `allowVersionMismatch` | `false` | Bypass the plugin apiLevel/Nix version guard |
 
 ## Example
 
@@ -326,6 +388,28 @@ transitively, so Cargo-Nix does not serialize a duplicate dependency graph.
 default to `0`; non-release builds default to `2`. The value is passed to both
 target and build-script rustc invocations and controls whether stdenv strips
 the installed output.
+
+### Nextest
+
+Each member exposes nextest targets, plus a metadata export for reusing the
+build in an external nextest invocation:
+
+```nix
+checks.x86_64-linux.my-crate-nextest =
+  cargoNix.workspaceMembers.my-crate.nextestRun;
+
+# Explicit workspace source, e.g. a filtered copy with only manifests.
+checks.x86_64-linux.my-crate-nextest-filtered =
+  cargoNix.workspaceMembers.my-crate.nextestRunFor ./filtered-src;
+
+# cargo-metadata-shaped JSON for nextest's reuse-build.
+checks.x86_64-linux.my-crate-nextest-metadata =
+  cargoNix.nextestCargoMetadata;
+```
+
+`nextestRun` compiles lib, integration, and bin test targets, then runs
+`cargo nextest`. The `mkNextestCargoMetadata { memberDir = …; }` variant lets
+you override where each member's source lives when passing a filtered tree.
 
 ### Doctests
 

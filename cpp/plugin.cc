@@ -132,10 +132,17 @@ static RegisterPrimOp rp(PrimOp {
       Resolve a Cargo workspace into a crate metadata attrset compatible with buildRustCrate.
 
       Accepts an attrset with:
-      - `metadata`: JSON string from `cargo metadata --format-version 1 --locked`
-      - `cargoLock`: Contents of `Cargo.lock`
-      - `target`: Attrset describing the target platform
-      - `rootFeatures` (optional): List of features to enable (defaults to `["default"]`)
+      - `manifestPath` (default mode): path to Cargo.toml; reads Cargo.lock and
+        the registry index without invoking cargo
+      - `metadata` + `cargoLock`: pre-generated `cargo metadata` JSON instead
+      - `target` (required): attrset describing the target platform
+      - `rootFeatures` (optional, lockfile mode only): list of features to
+        enable; defaults to `[]`
+      - `noDefaultFeatures` (optional, lockfile mode only)
+      - `cargoHome` (optional): registry index cache location
+      - `gitSources` (optional): pre-fetched git checkouts
+      - `allowExternalPathDeps` (optional): permit path deps outside the
+        workspace root; the caller must supply their source
     )",
     .impl = prim_resolveCargoWorkspace,
 });
