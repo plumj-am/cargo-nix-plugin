@@ -102,7 +102,12 @@ fn validate_and_resolve(input: &PluginInput) -> Result<crate::resolve::Workspace
                 .cargo_lock
                 .as_deref()
                 .ok_or("'cargoLock' is required when 'metadata' is provided.")?;
-            resolve_workspace(metadata, cargo_lock, &input.target)
+            resolve_workspace(
+                metadata,
+                cargo_lock,
+                &input.target,
+                input.allow_external_path_deps,
+            )
         }
         // Mode 2: lockfile resolve from Cargo.lock + registry index
         (None, Some(manifest_path)) => {

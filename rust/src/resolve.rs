@@ -169,6 +169,7 @@ pub fn resolve_workspace(
     metadata_json: &str,
     cargo_lock: &str,
     target: &TargetDescription,
+    allow_external_path_deps: bool,
 ) -> Result<WorkspaceResult, String> {
     let metadata: Metadata = serde_json::from_str(metadata_json)
         .map_err(|e| format!("Failed to parse metadata: {e}"))?;
@@ -234,6 +235,17 @@ pub fn resolve_workspace(
             .unwrap_or_default();
 
         let source = resolve_source(pkg);
+        if !allow_external_path_deps {
+            if let Some(SourceInfo::Local { path }) = &source {
+                if !Path::new(path).starts_with(metadata.workspace_root.as_std_path()) {
+                    return Err(format!(
+                        "path dependency {} {} is outside workspace root {}; \
+                         set allowExternalPathDeps = true and provide localSrc for it",
+                        pkg.name, pkg.version, metadata.workspace_root
+                    ));
+                }
+            }
+        }
         let sha256 = lockfile_hashes
             .get(&(pkg.name.to_string(), pkg.version.to_string()))
             .cloned();
@@ -629,7 +641,7 @@ mod tests {
         let metadata = include_str!("../tests/fixtures/metadata.json");
         let cargo_lock = include_str!("../tests/fixtures/Cargo.lock");
 
-        let result = resolve_workspace(metadata, cargo_lock, &linux_x86_64())
+        let result = resolve_workspace(metadata, cargo_lock, &linux_x86_64(), false)
             .expect("resolve_workspace failed");
 
         // 1798 packages in metadata, should have entries for all of them
@@ -695,7 +707,7 @@ mod tests {
         let metadata = include_str!("../tests/fixtures/metadata.json");
         let cargo_lock = include_str!("../tests/fixtures/Cargo.lock");
 
-        let result = resolve_workspace(metadata, cargo_lock, &linux_x86_64())
+        let result = resolve_workspace(metadata, cargo_lock, &linux_x86_64(), false)
             .expect("resolve_workspace failed");
 
         let rav1e = result
@@ -730,7 +742,7 @@ mod tests {
         let metadata = include_str!("../tests/fixtures/metadata.json");
         let cargo_lock = include_str!("../tests/fixtures/Cargo.lock");
 
-        let result = resolve_workspace(metadata, cargo_lock, &linux_x86_64())
+        let result = resolve_workspace(metadata, cargo_lock, &linux_x86_64(), false)
             .expect("resolve_workspace failed");
 
         let member_ids: std::collections::HashSet<&str> = result
@@ -751,6 +763,25 @@ mod tests {
                 crate_info.dev_dependencies.len()
             );
         }
+    }
+
+    #[test]
+    fn external_path_dep_rejected_without_opt_in() {
+        let metadata = include_str!("../tests/fixtures/metadata.json");
+        let cargo_lock = include_str!("../tests/fixtures/Cargo.lock");
+        let mut value: serde_json::Value =
+            serde_json::from_str(metadata).expect("fixture metadata is valid JSON");
+        let package = value["packages"]
+            .as_array_mut()
+            .expect("packages array")
+            .iter_mut()
+            .find(|package| package["name"] == "internal-crate-001")
+            .expect("workspace member in fixtures");
+        package["manifest_path"] = serde_json::Value::String("/outside/Cargo.toml".into());
+
+        let err = resolve_workspace(&value.to_string(), cargo_lock, &linux_x86_64(), false)
+            .unwrap_err();
+        assert!(err.contains("outside workspace root"), "unexpected error: {err}");
     }
 
     /// Helper: build a minimal Package with the given optional deps and feature map.

@@ -10,6 +10,25 @@
   nix,
 }:
 
+let
+  # `lib/default.nix` resolves `../nix` and `../tests` relative to the source
+  # tree, so the wrapper test needs a copy that keeps those paths together.
+  repo = builtins.path {
+    path = ../.;
+    name = "cargo-nix-plugin-source";
+    filter =
+      path: _type:
+      let
+        rel = pkgs.lib.removePrefix (toString ../.) path;
+      in
+      rel == ""
+      || rel == "/tests"
+      || pkgs.lib.hasPrefix "/lib" rel
+      || pkgs.lib.hasPrefix "/nix" rel
+      || pkgs.lib.hasPrefix "/tests/external-path-dep" rel
+      || pkgs.lib.hasPrefix "/tests/external-path-workspace" rel;
+  };
+in
 pkgs.runCommand "cargo-nix-plugin-error-path-test"
   {
     nativeBuildInputs = [ nix ];
@@ -110,7 +129,7 @@ EOF
       "wrapper metadata with rootFeatures" \
       "rootFeatures and noDefaultFeatures require lockfile-resolve mode" \
       "let
-        cargoNix = import ${../lib} {
+        cargoNix = import ${repo}/lib {
           pkgs = import ${pkgs.path} { system = \"${pkgs.stdenv.hostPlatform.system}\"; };
           metadata = builtins.readFile \"${testFixtures}/metadata.json\";
           cargoLock = builtins.readFile \"${testFixtures}/Cargo.lock\";
@@ -118,6 +137,18 @@ EOF
           rootFeatures = [ \"serde\" ];
         };
       in cargoNix.resolved"
+
+    expect_error \
+      "wrapper external path without localSrc" \
+      "out-of-tree path dependency" \
+      "let
+        cargoNix = import ${repo}/lib {
+          pkgs = import ${pkgs.path} { system = \"${pkgs.stdenv.hostPlatform.system}\"; };
+          src = ${repo}/tests;
+          manifestPath = ${repo}/tests/external-path-workspace/Cargo.toml;
+          allowExternalPathDeps = true;
+        };
+      in cargoNix.workspaceMembers.external-path-workspace.build.drvPath"
 
     touch $out
   ''

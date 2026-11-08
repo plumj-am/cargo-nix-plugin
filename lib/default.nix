@@ -76,10 +76,22 @@
   # workspace) — return either a path (legacy: builder sees only that dir,
   # so `*.workspace = true` for CARGO_PKG_* falls back to empty) or
   # `{ src, workspace_member }` to keep ws-inherit working.
-  localSrc ? relPath: {
-    inherit src;
-    workspace_member = if relPath == "" then "." else relPath;
-  },
+  #
+  # Out-of-tree path deps are passed as absolute paths and the default
+  # throws: return `{ src = <path>; workspace_member = …; }` for them, or
+  # keep `allowExternalPathDeps = false`.
+  localSrc ? relPath:
+    if lib.hasPrefix "/" relPath then
+      throw ''
+        cargo-nix-plugin: out-of-tree path dependency '${relPath}' needs a
+        `localSrc` override. Return { src = <store path>; workspace_member = …; }
+        or leave allowExternalPathDeps = false.
+      ''
+    else
+      {
+        inherit src;
+        workspace_member = if relPath == "" then "." else relPath;
+      },
   # Optional: alternative registry configuration. Maps the index URL
   # (as cargo metadata / Cargo.lock reports it, including the `sparse+`
   # or `registry+` scheme prefix) to { dl, fetchurl? }.
@@ -395,8 +407,11 @@ let
       sourcePath = crateInfo.source.path or workspaceRoot;
       # Strip workspace root prefix to get relative path (e.g. "harmonia-client")
       relPath = lib.removePrefix (workspaceRoot + "/") sourcePath;
-      isSubdir = relPath != sourcePath && relPath != "";
-      ls = localSrc (if isSubdir then relPath else "");
+      isRoot = sourcePath == workspaceRoot;
+      isSubdir = !isRoot && relPath != sourcePath;
+      # Out-of-tree crates must not fall back to the workspace `src`.
+      localSrcArg = if isRoot then "" else if isSubdir then relPath else sourcePath;
+      ls = localSrc localSrcArg;
     in
     if sourceType == "local" then
       # Accept legacy `localSrc` overrides that return a bare path/derivation.
