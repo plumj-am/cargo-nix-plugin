@@ -32,7 +32,7 @@ Add that line to `nix.conf`, or pass it per invocation:
 NIX_CONFIG="plugin-files = $PLUGIN/lib/nix/plugins" nix build .#myPackage
 ```
 
-The flake input supplies `lib` and the package outputs:
+The flake input supplies `lib` and matched client/plugin package outputs:
 
 ```nix
 {
@@ -40,12 +40,29 @@ The flake input supplies `lib` and the package outputs:
 }
 ```
 
+Build the pair for a specific Nix version:
+
+```bash
+NIX=$(nix build .#nix_2_35 --print-out-paths | grep -v man)
+PLUGIN=$(nix build .#cargo-nix-plugin-nix_2_35 --print-out-paths)
+```
+
+Or use the bootstrap wrapper, which preloads the matching plugin:
+
+```bash
+nix run .#nixBootstrap -- build .#myPackage
+```
+
+`.#nixBootstrap` is built for the default plugin version. The per-version
+wrapper is also available, for example
+`.#nix-with-cargo-nix-plugin-nix_2_34`.
+
 A consuming flake can also set `nixConfig.plugin-files`, but that only works
 for trusted flakes and makes evaluation impure. Prefer `nix.conf` for CI and
 shared machines.
 
-On NixOS, import `nixosModules.default`. It pins `nix.package` to the Nix
-version the default plugin was built against and adds `plugin-files`:
+On NixOS, import `nixosModules.default`. It sets `nix.package` from the
+matched Nix output and adds `plugin-files`:
 
 ```nix
 {
@@ -63,8 +80,18 @@ nixosConfigurations.host = nixpkgs.lib.nixosSystem {
 };
 ```
 
-Override `cargo-nix-plugin.package` with `#cargo-nix-plugin-nix_<version>`
-when you intentionally run a different Nix version.
+Override both `cargo-nix-plugin.package` and `cargo-nix-plugin.nixPackage`
+with the matching versioned outputs when you intentionally run a different
+Nix version:
+
+```nix
+{
+  cargo-nix-plugin.package =
+    inputs.cargo-nix-plugin.packages.${pkgs.stdenv.hostPlatform.system}.cargo-nix-plugin-nix_2_34;
+  cargo-nix-plugin.nixPackage =
+    inputs.cargo-nix-plugin.packages.${pkgs.stdenv.hostPlatform.system}.nix_2_34;
+}
+```
 
 ## Usage
 
@@ -227,8 +254,8 @@ The plugin must be loaded by the same Nix version it was compiled against
 `--option`:
 
 ```bash
-PLUGIN=$(nix build .#cargo-nix-plugin --print-out-paths)
-NIX=$(nix build nixpkgs#nixVersions.nix_2_35 --print-out-paths | grep -v man)
+PLUGIN=$(nix build .#cargo-nix-plugin-nix_2_35 --print-out-paths)
+NIX=$(nix build .#nix_2_35 --print-out-paths | grep -v man)
 
 $NIX/bin/nix-instantiate --eval \
   --option plugin-files "$PLUGIN/lib/nix/plugins" \
@@ -481,16 +508,18 @@ compiles too — `extraCfgs` only affects dependency resolution.
   2.35.x to evaluate:
 
   ```bash
-  # Get the matching nix
-  NIX=$(nix build nixpkgs#nixVersions.nix_2_35 --print-out-paths | grep -v man)
-  PLUGIN=$(nix build .#cargo-nix-plugin --print-out-paths)
+  # Use the matching pair from this flake
+  NIX=$(nix build .#nix_2_35 --print-out-paths | grep -v man)
+  PLUGIN=$(nix build .#cargo-nix-plugin-nix_2_35 --print-out-paths)
 
   $NIX/bin/nix build .#myPackage \
     --option plugin-files "$PLUGIN/lib/nix/plugins"
   ```
 
-  For other Nix versions, build the matching per-version attribute, e.g.
-  `.#cargo-nix-plugin-nix_2_34` to pair with `nixVersions.nix_2_34`. The
+  The flake emits `nix_<version>`, `cargo-nix-plugin-nix_<version>`, and
+  `nix-with-cargo-nix-plugin-nix_<version>` for each matrix entry, plus the
+  default `nix` and `nixBootstrap` outputs. For other Nix versions, use the
+  matching pair, e.g. `.#nix_2_34` with `.#cargo-nix-plugin-nix_2_34`. The
   flake's `nixVersions` set (in `flake.nix`) lists what's currently built;
   Nix >= 2.34 is required.
 

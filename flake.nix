@@ -67,6 +67,20 @@
           enableSanitizers = true;
         };
 
+      # A Nix client with the matching plugin preloaded. Consumers can
+      # use this for bootstrap scripts instead of coordinating a Nix
+      # package and a plugin package by hand.
+      mkNixBootstrap =
+        pkgs: plugin: nix:
+        pkgs.writeShellApplication {
+          name = "nix-with-cargo-nix-plugin";
+          text = ''
+            exec ${nix}/bin/nix \
+              --extra-experimental-features "nix-command flakes" \
+              --option plugin-files ${plugin}/lib/nix/plugins "$@"
+          '';
+        };
+
       # Generate test derivations for a given nix version.
       mkTests =
         pkgs: plugin: nix:
@@ -162,6 +176,7 @@
             components = pkgs.nixVersions.${cfg.components};
             nix = pkgs.nixVersions.${cfg.binary};
             plugin = mkPlugin pkgs components;
+            bootstrap = mkNixBootstrap pkgs plugin nix;
             tests = mkTests pkgs plugin nix;
             # The UBSan build statically links compiler-rt's minimal
             # runtime via GNU-ld --whole-archive from lib/linux/; no
@@ -173,6 +188,8 @@
           acc
           // {
             "cargo-nix-plugin-nix_${ver}" = plugin;
+            "nix_${ver}" = nix;
+            "nix-with-cargo-nix-plugin-nix_${ver}" = bootstrap;
           }
           // nixpkgs.lib.mapAttrs' (name: drv: nixpkgs.lib.nameValuePair "${name}-nix_${ver}" drv) tests
           // nixpkgs.lib.mapAttrs' (
@@ -183,16 +200,21 @@
       # The default nix version used for the top-level plugin package.
       # Keep README.md (## Example, ## Compatibility) in sync when bumping.
       defaultNixComponents = "nixComponents_2_35";
+      defaultNixBinary = builtins.replaceStrings [ "nixComponents_" ] [ "nix_" ] defaultNixComponents;
     in
     {
       packages = forAllSystems (
         pkgs:
         let
           defaultPlugin = mkPlugin pkgs pkgs.nixVersions.${defaultNixComponents};
+          defaultNix = pkgs.nixVersions.${defaultNixBinary};
+          defaultBootstrap = mkNixBootstrap pkgs defaultPlugin defaultNix;
         in
         {
           default = defaultPlugin;
           cargo-nix-plugin = defaultPlugin;
+          nix = defaultNix;
+          nixBootstrap = defaultBootstrap;
           cargo-nix-prefetch = pkgs.callPackage ./nix/cargo-nix-prefetch.nix { };
           # Optional: helper for generating metadata JSON explicitly.
           # Only needed for explicit-metadata mode (`metadata` + `cargoLock`).
@@ -251,6 +273,12 @@
             self.packages.${pkgs.stdenv.hostPlatform.system}.generate-metadata
           }/bin/generate-metadata";
         };
+        nixBootstrap = {
+          type = "app";
+          program = "${
+            self.packages.${pkgs.stdenv.hostPlatform.system}.nixBootstrap
+          }/bin/nix-with-cargo-nix-plugin";
+        };
       });
 
       # Checks run against every nix version in the matrix, on every
@@ -280,19 +308,43 @@
         ) { } (builtins.attrNames nixVersions)
         // {
           cargo-compat-test = pkgs.callPackage ./tests/cargo-compat-test.nix { };
+          bootstrap-test = pkgs.runCommand "cargo-nix-plugin-bootstrap-test" { } ''
+            export HOME=$(mktemp -d)
+            export NIX_STORE_DIR=$TMPDIR/nix/store
+            export NIX_STATE_DIR=$TMPDIR/nix/var
+            export NIX_LOG_DIR=$TMPDIR/nix/log
+            mkdir -p $NIX_STORE_DIR $NIX_STATE_DIR $NIX_LOG_DIR
+
+            bootstrap=${
+              self.packages.${pkgs.stdenv.hostPlatform.system}.nixBootstrap
+            }/bin/nix-with-cargo-nix-plugin
+            expected=${self.packages.${pkgs.stdenv.hostPlatform.system}.nix.version}
+            version=$($bootstrap --version)
+            case "$version" in
+              *"$expected"*) ;;
+              *)
+                echo "unexpected Nix version from bootstrap: $version (want $expected)" >&2
+                exit 1
+                ;;
+            esac
+            api=$($bootstrap eval --impure --raw --expr 'toString (builtins.cargoNixApiLevel or 0)')
+            test "$api" = 4
+            touch $out
+          '';
         }
       );
 
       lib = import ./lib;
 
       nixosModules.default =
-        { config, lib, pkgs, ... }:
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
         let
           cfg = config.cargo-nix-plugin;
-          defaultNixBinary = builtins.replaceStrings
-            [ "nixComponents_" ]
-            [ "nix_" ]
-            defaultNixComponents;
         in
         {
           options.cargo-nix-plugin = {
@@ -302,14 +354,18 @@
               default = self.packages.${pkgs.stdenv.hostPlatform.system}.cargo-nix-plugin;
               description = "Plugin build; must match the Nix evaluating builds.";
             };
+            nixPackage = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.nix;
+              description = "Nix client that the default plugin was built against.";
+            };
           };
 
           config = lib.mkIf cfg.enable {
             # Keep the host Nix and the plugin's nixComponents in lockstep.
             # Use the flake's locked nixpkgs, not the consumer's, so the
             # exact-version guard sees the same patch release.
-            nix.package = lib.mkDefault
-              self.inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}.nixVersions.${defaultNixBinary};
+            nix.package = lib.mkDefault cfg.nixPackage;
             nix.settings.plugin-files = lib.mkAfter [
               "${cfg.package}/lib/nix/plugins"
             ];
