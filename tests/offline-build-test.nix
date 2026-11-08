@@ -155,12 +155,18 @@ pkgs.runCommand "cargo-nix-plugin-offline-build-test"
     externalPathExpr='
       let
         pkgs = import ${pkgs.path} { system = "${pkgs.stdenv.hostPlatform.system}"; };
+        lib = pkgs.lib;
+        workspaceSrc = ${pluginSrc}/tests/external-path-workspace;
       in import ${pluginSrc}/lib {
         inherit pkgs;
-        src = ${pluginSrc}/tests/external-path-workspace;
+        src = workspaceSrc;
         manifestPath = "${pluginSrc}/tests/external-path-workspace/Cargo.toml";
         allowExternalPathDeps = true;
         clippyAllFeatures = true;
+        localSrc = path: {
+          src = if lib.hasPrefix "/" path then path else workspaceSrc;
+          workspace_member = if path == "" then "." else path;
+        };
       }
     '
     instantiate "($externalPathExpr).clippy.workspaceMembers.external-path-workspace.build" > /dev/null
