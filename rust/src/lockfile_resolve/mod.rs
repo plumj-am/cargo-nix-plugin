@@ -14,24 +14,12 @@ use std::str::FromStr;
 
 use crate::cfg_eval::{matches_target, TargetDescription};
 use crate::feature_resolve::{self, DepFeatureInfo, PackageFeatureInfo};
-use crate::lockfile::parse_lockfile;
+use crate::lockfile::{parse_lockfile, LockPackage};
 use crate::registry;
 use crate::resolve::{CrateInfo, DepInfo, SourceInfo, WorkspaceResult};
 
 mod manifest;
 use manifest::{parse_workspace, GitCheckout, ManifestDep, WorkspaceMember};
-
-/// A parsed Cargo.lock package entry.
-#[derive(Debug, Clone, serde::Deserialize)]
-struct LockPackage {
-    name: String,
-    version: String,
-    #[serde(default)]
-    source: Option<String>,
-    /// Dependency references as they appear in Cargo.lock: "name" or "name version".
-    #[serde(default)]
-    dependencies: Vec<String>,
-}
 
 /// Resolve a workspace using Cargo.lock + registry index (no cargo metadata).
 ///
@@ -53,9 +41,10 @@ pub fn resolve_from_lockfile(
     git_sources: &HashMap<String, PathBuf>,
     allow_external_path_deps: bool,
 ) -> Result<WorkspaceResult, String> {
-    // 1. Parse Cargo.lock
-    let lock_packages = parse_lock_packages(cargo_lock)?;
-    let lockfile_hashes = parse_lockfile(cargo_lock)?;
+    // 1. Parse Cargo.lock once: packages and checksums.
+    let parsed_lockfile = parse_lockfile(cargo_lock)?;
+    let lock_packages = parsed_lockfile.packages;
+    let lockfile_hashes = parsed_lockfile.hashes;
 
     // 2. Parse workspace manifests
     let workspace = parse_workspace(workspace_root)?;
@@ -465,17 +454,6 @@ impl ShortId {
     }
 }
 
-/// Parse Cargo.lock into structured package entries.
-fn parse_lock_packages(cargo_lock: &str) -> Result<Vec<LockPackage>, String> {
-    #[derive(serde::Deserialize)]
-    struct Lock {
-        package: Vec<LockPackage>,
-    }
-    let lock: Lock =
-        toml::from_str(cargo_lock).map_err(|e| format!("Failed to parse Cargo.lock: {e}"))?;
-    Ok(lock.package)
-}
-
 /// Resolve dependencies for a workspace member (or git-sourced crate whose
 /// manifest we parsed ourselves) using the lockfile.
 fn resolve_member_deps(
@@ -711,7 +689,7 @@ dependencies = [
 name = "serde_derive"
 version = "1.0.210"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abcd1234"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -725,7 +703,7 @@ dependencies = [
  "serde",
 ]
 "#;
-        let pkgs = parse_lock_packages(lock).unwrap();
+        let pkgs = parse_lockfile(lock).unwrap().packages;
         assert_eq!(pkgs.len(), 3);
         assert_eq!(pkgs[0].name, "serde");
         assert_eq!(pkgs[0].dependencies, vec!["serde_derive"]);
@@ -739,6 +717,7 @@ dependencies = [
             version: "1.0.210".into(),
             source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
             dependencies: vec![],
+            checksum: None,
         };
         assert_eq!(resolve_pkg_source(&pkg), Some(SourceInfo::CratesIo));
     }
@@ -750,6 +729,7 @@ dependencies = [
             version: "0.1.0".into(),
             source: Some("git+https://github.com/user/foo.git?branch=main#abc123".into()),
             dependencies: vec![],
+            checksum: None,
         };
         assert_eq!(
             resolve_pkg_source(&pkg),
@@ -775,12 +755,14 @@ dependencies = [
                 version: "0.4.6".into(),
                 source: None,
                 dependencies: vec![],
+                checksum: None,
             },
             LockPackage {
                 name: "http-body".into(),
                 version: "1.0.1".into(),
                 source: None,
                 dependencies: vec![],
+                checksum: None,
             },
         ];
         let dep_refs = vec!["http-body 0.4.6".to_string(), "http-body 1.0.1".to_string()];
@@ -805,6 +787,7 @@ dependencies = [
             version: "1.49.0+vendor.1".into(),
             source: None,
             dependencies: vec![],
+            checksum: None,
         }];
         let dep_refs = vec!["tokio 1.49.0+vendor.1".to_string()];
         let req = semver::VersionReq::parse("^1.49").unwrap();
@@ -822,6 +805,7 @@ dependencies = [
             version: "1.0.210".into(),
             source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
             dependencies: vec![],
+            checksum: None,
         }];
         let dep_refs = vec![
             "serde 1.0.210 (registry+https://github.com/rust-lang/crates.io-index)".to_string(),
@@ -845,6 +829,7 @@ dependencies = [
             version: "1.8.1".into(),
             source: None,
             dependencies: vec![],
+            checksum: None,
         }];
         // Bare name — only one hyper in lockfile, so no version suffix
         let dep_refs = vec!["hyper".to_string()];
@@ -1413,6 +1398,7 @@ version = "0.1.0"
             version: "0.1.0".into(),
             source: Some("git+https://example.com/repo#abc123".into()),
             dependencies: vec![],
+            checksum: None,
         };
         // Just exercise the source parse + key format, since the full
         // resolve needs a workspace on disk.

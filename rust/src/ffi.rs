@@ -77,6 +77,33 @@ struct PluginInput {
     allow_external_path_deps: bool,
 }
 
+/// Chroot-store path mapping supplied by the C++ shim.
+#[derive(serde::Deserialize)]
+struct StoreRemap {
+    from: String,
+    to: String,
+}
+
+fn remap_string(value: &mut String, remap: &StoreRemap) {
+    if value.starts_with(&remap.from) {
+        *value = format!("{}{}", remap.to, &value[remap.from.len()..]);
+    }
+}
+
+fn apply_store_remap(input: &mut PluginInput, remap: &StoreRemap) {
+    if let Some(path) = &mut input.manifest_path {
+        remap_string(path, remap);
+    }
+    if let Some(path) = &mut input.cargo_home {
+        remap_string(path, remap);
+    }
+    for path in input.git_sources.values_mut() {
+        let mut value = path.to_string_lossy().into_owned();
+        remap_string(&mut value, remap);
+        *path = value.into();
+    }
+}
+
 /// Validate input and resolve the workspace using the appropriate mode.
 fn validate_and_resolve(input: &PluginInput) -> Result<crate::resolve::WorkspaceResult, String> {
     match (&input.metadata, &input.manifest_path) {
@@ -162,6 +189,7 @@ fn dirs_home() -> std::path::PathBuf {
 #[no_mangle]
 pub unsafe extern "C" fn resolve_cargo_workspace(
     input_json: *const c_char,
+    store_remap_json: *const c_char,
     out: *mut *mut c_char,
     err_out: *mut *mut c_char,
 ) -> i32 {
@@ -169,8 +197,20 @@ pub unsafe extern "C" fn resolve_cargo_workspace(
         let input_str = unsafe { CStr::from_ptr(input_json) }
             .to_str()
             .map_err(|e| format!("Invalid UTF-8 in input: {e}"))?;
-        let input: PluginInput = serde_json::from_str(input_str)
+        let remap_str = if store_remap_json.is_null() {
+            "null"
+        } else {
+            unsafe { CStr::from_ptr(store_remap_json) }
+                .to_str()
+                .map_err(|e| format!("Invalid UTF-8 in store remap: {e}"))?
+        };
+        let remap: Option<StoreRemap> = serde_json::from_str(remap_str)
+            .map_err(|e| format!("Failed to parse store remap: {e}"))?;
+        let mut input: PluginInput = serde_json::from_str(input_str)
             .map_err(|e| format!("Failed to parse plugin input: {e}"))?;
+        if let Some(remap) = &remap {
+            apply_store_remap(&mut input, remap);
+        }
         validate_and_resolve(&input)
     }));
 

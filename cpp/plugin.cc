@@ -19,6 +19,7 @@
 #include <nix/expr/value-to-json.hh>
 #include <nix/store/local-fs-store.hh>
 #include <nlohmann/json.hpp>
+#include <sstream>
 
 #ifndef NIX_COMPILE_VERSION
 #define NIX_COMPILE_VERSION "unknown"
@@ -28,6 +29,7 @@
 extern "C" {
     int resolve_cargo_workspace(
         const char *input_json,
+        const char *store_remap_json,
         char **out,
         char **err_out
     );
@@ -37,66 +39,40 @@ extern "C" {
 
 using namespace nix;
 
-/**
- * If the store is a chroot store (--store /tmp/foo), remap a logical
- * store path to the real filesystem path so that cargo metadata can
- * read it during eval.
- *
- * Example: /nix/store/xxx-source/Cargo.toml
- *       -> /tmp/foo/nix/store/xxx-source/Cargo.toml
- */
-static std::string remapStorePath(Store &store, const std::string &path) {
-    auto *localFS = dynamic_cast<LocalFSStore *>(&store);
-    if (!localFS)
-        return path;
-
-    auto realStoreDir = localFS->getRealStoreDir();
-    auto logicalStoreDir = store.storeDir;
-
-    // No remapping needed if real == logical (normal store)
-    if (realStoreDir == logicalStoreDir)
-        return path;
-
-    // Only remap paths that start with the logical store dir
-    if (path.substr(0, logicalStoreDir.size()) != logicalStoreDir)
-        return path;
-
-    return realStoreDir + path.substr(logicalStoreDir.size());
-}
-
 static void resolveCargoWorkspaceImpl(EvalState &state, PosIdx pos,
                                        Value *const *args, Value &v) {
     state.forceAttrs(*args[0], pos,
         "while evaluating the argument to builtins.resolveCargoWorkspace");
 
-    // Serialize the entire input attrset to JSON and hand it to Rust
+    // Serialize the input attrset directly to a stream. Path remapping for
+    // chroot stores happens in Rust, so the whole JSON tree is not built
+    // and re-dumped here.
     NixStringContext context;
-    auto inputJson = printValueAsJSON(state, true, *args[0], pos, context, false);
+    std::ostringstream inputStream;
+    printValueAsJSON(state, true, *args[0], pos, inputStream, context, false);
 
-    // The Rust side opens these paths with std::fs. Under a chroot store
-    // (`--store local?root=/tmp/foo`) the logical /nix/store/... paths
-    // don't exist on disk — remap them to the real filesystem location.
-    auto remapField = [&](nlohmann::json &v) {
-        if (v.is_string())
-            v = remapStorePath(*state.store, v.get<std::string>());
-    };
-    if (inputJson.contains("manifestPath"))
-        remapField(inputJson["manifestPath"]);
-    // cargoHome can be a store path (e.g. a pre-warmed registry index drv).
-    if (inputJson.contains("cargoHome"))
-        remapField(inputJson["cargoHome"]);
-    // gitSources values are builtins.fetchGit checkouts — always store paths.
-    if (inputJson.contains("gitSources") && inputJson["gitSources"].is_object()) {
-        for (auto &[_, checkout] : inputJson["gitSources"].items())
-            remapField(checkout);
+    // Under a chroot store (`--store local?root=/tmp/foo`) the logical
+    // /nix/store/... paths don't exist on disk. Hand Rust the mapping and
+    // let it rewrite the path fields after deserialization.
+    std::string storeRemapJson = "null";
+    if (auto *localFS = dynamic_cast<LocalFSStore *>(state.store.operator->())) {
+        auto realStoreDir = localFS->getRealStoreDir();
+        auto logicalStoreDir = state.store->storeDir;
+        if (realStoreDir != logicalStoreDir) {
+            nlohmann::json remap;
+            remap["from"] = logicalStoreDir;
+            remap["to"] = realStoreDir;
+            storeRemapJson = remap.dump();
+        }
     }
 
-    auto inputStr = inputJson.dump();
+    std::string inputStr = inputStream.str();
 
     char *resultJson = nullptr;
     char *errorMsg = nullptr;
 
-    int rc = resolve_cargo_workspace(inputStr.c_str(), &resultJson, &errorMsg);
+    int rc = resolve_cargo_workspace(
+        inputStr.c_str(), storeRemapJson.c_str(), &resultJson, &errorMsg);
 
     if (rc != 0) {
         std::string err = errorMsg ? errorMsg : "unknown error";

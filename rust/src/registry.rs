@@ -176,11 +176,29 @@ fn lookup_crate_inner(
     let krate_name =
         KrateName::crates_io(name).map_err(|e| format!("invalid crate name '{name}': {e}"))?;
     let lock = FileLock::unlocked();
+    let cache_key = (
+        cargo_home.to_string_lossy().into_owned(),
+        url.to_string(),
+        name.to_string(),
+    );
+
+    // Serve repeat lookups from the parsed cache before touching disk.
+    if let Some(krate) = krate_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&cache_key)
+        .cloned()
+    {
+        if fresh(&krate) {
+            return Ok(krate);
+        }
+    }
 
     // Probe for a pre-existing cache dir first — covers both
     // cargo-populated `~/.cargo` and a read-only store-path cargoHome
     // pre-seeded by `cargo-nix-prefetch`.
     if let Some(krate) = cached_in_existing_dir(cargo_home, url, krate_name).filter(&fresh) {
+        cache_krate(cargo_home, url, name, &krate);
         return Ok(krate);
     }
 
@@ -188,6 +206,7 @@ fn lookup_crate_inner(
     let sparse_index = index_for_url(cargo_home, url)?;
     if let Ok(Some(krate)) = sparse_index.cached_krate(krate_name, &lock) {
         if fresh(&krate) {
+            cache_krate(cargo_home, url, name, &krate);
             return Ok(krate);
         }
     }
@@ -196,8 +215,10 @@ fn lookup_crate_inner(
     // write goes through `write_cache_atomic`, so the worst a concurrent
     // fetcher sees is "still absent" and does its own fetch. The package
     // lock is reserved for herd-collapse in the bulk prefetch path.
-    fetch_one(shared_agent(), &sparse_index, url, name)?
-        .ok_or_else(|| format!("crate '{name}' not found in remote index '{url}'"))
+    let krate = fetch_one(shared_agent(), &sparse_index, url, name)?
+        .ok_or_else(|| format!("crate '{name}' not found in remote index '{url}'"))?;
+    cache_krate(cargo_home, url, name, &krate);
+    Ok(krate)
 }
 
 /// Extract the hostname (without port) from a registry URL.
@@ -332,6 +353,30 @@ fn custom_root_certs(
 }
 
 const PREFETCH_WORKERS: usize = 32;
+
+type KrateCache = std::sync::Mutex<
+    std::collections::HashMap<(String, String, String), IndexKrate>,
+>;
+
+fn krate_cache() -> &'static KrateCache {
+    static CACHE: std::sync::LazyLock<KrateCache> =
+        std::sync::LazyLock::new(Default::default);
+    &CACHE
+}
+
+fn cache_krate(cargo_home: &Path, url: &str, name: &str, krate: &IndexKrate) {
+    krate_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(
+            (
+                cargo_home.to_string_lossy().into_owned(),
+                url.to_string(),
+                name.to_string(),
+            ),
+            krate.clone(),
+        );
+}
 
 /// Per-URL SparseIndex cache. Creating one hashes the URL and mkdirs the
 /// cache path — cheap, but doing it once per fetched crate adds up when
@@ -891,8 +936,12 @@ pub fn prefetch_index(cargo_home: &Path, jobs: &[PrefetchJob]) -> Result<(), Str
                     continue;
                 };
                 match fetch_one(agent, &idx, &url, &name) {
-                    Ok(_) => {
+                    Ok(Some(krate)) => {
+                        cache_krate(cargo_home, &url, &name, &krate);
                         ok_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok(None) => {
+                        *last_err.lock().unwrap() = Some(format!("crate '{name}' not found"));
                     }
                     Err(e) => {
                         *last_err.lock().unwrap() = Some(e);

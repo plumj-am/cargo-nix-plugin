@@ -10,22 +10,34 @@ use std::collections::HashMap;
 /// Parsed lockfile checksums: (name, version) -> SRI hash
 pub type LockfileHashes = HashMap<(String, String), String>;
 
+/// A parsed Cargo.lock package entry.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LockPackage {
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Dependency references as they appear in Cargo.lock: "name" or "name version".
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub checksum: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct CargoLock {
     package: Vec<LockPackage>,
 }
 
-#[derive(Deserialize)]
-struct LockPackage {
-    name: String,
-    version: String,
-    #[serde(default)]
-    checksum: Option<String>,
+/// Parsed lockfile contents: packages plus their checksums.
+#[derive(Debug)]
+pub struct ParsedLockfile {
+    pub packages: Vec<LockPackage>,
+    pub hashes: LockfileHashes,
 }
 
-/// Parse a Cargo.lock string and extract checksums by (name, version),
-/// converting hex sha256 to SRI format.
-pub fn parse_lockfile(cargo_lock: &str) -> Result<LockfileHashes, String> {
+/// Parse a Cargo.lock string once, extracting packages and their checksums.
+pub fn parse_lockfile(cargo_lock: &str) -> Result<ParsedLockfile, String> {
     let lock: CargoLock =
         toml::from_str(cargo_lock).map_err(|e| format!("failed to parse Cargo.lock: {e}"))?;
     let mut hashes = LockfileHashes::new();
@@ -42,7 +54,10 @@ pub fn parse_lockfile(cargo_lock: &str) -> Result<LockfileHashes, String> {
             }
         }
     }
-    Ok(hashes)
+    Ok(ParsedLockfile {
+        packages: lock.package,
+        hashes,
+    })
 }
 
 /// Convert a hex-encoded sha256 to SRI format (sha256-<base64>).
@@ -101,7 +116,7 @@ version = "1.0.210"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8e3592472072e6e22e0a54d5904d9febf8508f65fb8552499a1abc7d1078c3a"
 "#;
-        let hashes = parse_lockfile(lock).unwrap();
+        let hashes = parse_lockfile(lock).unwrap().hashes;
         assert_eq!(
             hashes.get(&("abnf".to_string(), "0.13.0".to_string())),
             Some(&"sha256-CHETvVDZrc4khQ7tXQR2x9GZ1TL86Pq1FzZQMx4JAzo=".to_string())
@@ -127,7 +142,7 @@ version = "1.0.210"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8e3592472072e6e22e0a54d5904d9febf8508f65fb8552499a1abc7d1078c3a"
 "#;
-        let hashes = parse_lockfile(lock).unwrap();
+        let hashes = parse_lockfile(lock).unwrap().hashes;
         assert!(!hashes.contains_key(&("my-local-crate".to_string(), "0.1.0".to_string())));
         assert!(hashes.contains_key(&("serde".to_string(), "1.0.210".to_string())));
     }
@@ -143,7 +158,7 @@ version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 "#;
-        let hashes = parse_lockfile(lock).unwrap();
+        let hashes = parse_lockfile(lock).unwrap().hashes;
         assert!(hashes.contains_key(&("itoa".to_string(), "1.0.11".to_string())));
     }
 
@@ -176,7 +191,7 @@ checksum = "nothex"
     #[test]
     fn parse_lockfile_torture_workspace() {
         let lock = include_str!("../tests/fixtures/Cargo.lock");
-        let hashes = parse_lockfile(lock).unwrap();
+        let hashes = parse_lockfile(lock).unwrap().hashes;
         assert!(
             hashes.len() > 1500,
             "expected many checksums, got {}",

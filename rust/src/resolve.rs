@@ -174,7 +174,8 @@ pub fn resolve_workspace(
     let metadata: Metadata = serde_json::from_str(metadata_json)
         .map_err(|e| format!("Failed to parse metadata: {e}"))?;
 
-    let lockfile_hashes = parse_lockfile(cargo_lock)?;
+    let parsed_lockfile = parse_lockfile(cargo_lock)?;
+    let lockfile_hashes = parsed_lockfile.hashes;
 
     let resolve = metadata
         .resolve
