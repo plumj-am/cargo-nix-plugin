@@ -57,6 +57,14 @@ nix run .#nixBootstrap -- build .#myPackage
 wrapper is also available, for example
 `.#nix-with-cargo-nix-plugin-nix_2_34`.
 
+`.#cargo-nix-nix` selects a plugin for the `nix` on `PATH`, probes it in a
+child process, then execs that Nix with the plugin loaded. It supports the
+stable minors listed in `nixVersions`:
+
+```bash
+nix run .#cargo-nix-nix -- build .#myPackage
+```
+
 A consuming flake can also set `nixConfig.plugin-files`, but that only works
 for trusted flakes and makes evaluation impure. Prefer `nix.conf` for CI and
 shared machines.
@@ -249,8 +257,9 @@ retries) on stderr. Warnings and errors are always printed.
 
 ## Example
 
-The plugin must be loaded by the same Nix version it was compiled against
-(see [Compatibility](#compatibility)). Evaluate with the plugin loaded via
+The plugin must be loaded by Nix in the same major.minor version it was
+compiled against (see [Compatibility](#compatibility)); patch releases in
+one minor are accepted with a warning. Evaluate with the plugin loaded via
 `--option`:
 
 ```bash
@@ -501,11 +510,12 @@ compiles too — `extraCfgs` only affects dependency resolution.
 
 ## Compatibility
 
-- **Nix**: The plugin must be loaded by the **same Nix version** it was compiled
-  against — the Nix plugin ABI is not stable across versions. If you see errors
-  like `expected a set but found a set`, you have a version mismatch.
-  `.#cargo-nix-plugin` (the default) is built against Nix 2.35, so use Nix
-  2.35.x to evaluate:
+- **Nix**: The plugin must match the evaluating Nix **major.minor**. Patch
+  releases in one minor are treated as compatible and produce a warning when
+  they differ. The ABI is not stable across minors. If you see errors like
+  `expected a set but found a set`, the plugin and Nix are in different
+  minors. `.#cargo-nix-plugin` (the default) is built against Nix 2.35, so
+  use Nix 2.35.x to evaluate:
 
   ```bash
   # Use the matching pair from this flake
@@ -518,10 +528,15 @@ compiles too — `extraCfgs` only affects dependency resolution.
 
   The flake emits `nix_<version>`, `cargo-nix-plugin-nix_<version>`, and
   `nix-with-cargo-nix-plugin-nix_<version>` for each matrix entry, plus the
-  default `nix` and `nixBootstrap` outputs. For other Nix versions, use the
-  matching pair, e.g. `.#nix_2_34` with `.#cargo-nix-plugin-nix_2_34`. The
-  flake's `nixVersions` set (in `flake.nix`) lists what's currently built;
-  Nix >= 2.34 is required.
+  default `nix`, `nixBootstrap`, and auto-selecting `cargo-nix-nix` outputs.
+  For other Nix minors, use the matching pair, e.g. `.#nix_2_34` with
+  `.#cargo-nix-plugin-nix_2_34`. The flake's `nixVersions` set (in
+  `flake.nix`) lists what is currently built; Nix >= 2.34 is required.
+
+  Patch compatibility is checked by `patch-abi-test-nix_2_34` and
+  `patch-abi-test-nix_2_35`: each builds a plugin against the oldest patch
+  in the minor and loads it into the current patch binary. A minor mismatch
+  is rejected by `minor-mismatch-test-nix_*`.
 
 - **Platforms**: `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`.
   Cross-compilation to other target platforms is supported.

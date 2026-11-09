@@ -80,7 +80,8 @@
   # Out-of-tree path deps are passed as absolute paths and the default
   # throws: return `{ src = <path>; workspace_member = …; }` for them, or
   # keep `allowExternalPathDeps = false`.
-  localSrc ? relPath:
+  localSrc ?
+    relPath:
     if lib.hasPrefix "/" relPath then
       throw ''
         cargo-nix-plugin: out-of-tree path dependency '${relPath}' needs a
@@ -171,7 +172,20 @@ let
   # predating the probes.
   resolverApiLevel = builtins.cargoNixApiLevel or 0;
   compiledNixVersion = builtins.cargoNixNixVersion or null;
-  nixVersionsMatch = compiledNixVersion == null || compiledNixVersion == builtins.nixVersion;
+  compiledNixMinor =
+    if compiledNixVersion == null then null else lib.versions.majorMinor compiledNixVersion;
+  nixMinor = lib.versions.majorMinor builtins.nixVersion;
+  # Patch releases within one minor share the plugin ABI. Minor releases
+  # do not; `cp/plugin.cc` changes with primop signatures (2.35 -> 2.36
+  # changed PosIdx to CallSite).
+  nixVersionsMatch = compiledNixVersion == null || compiledNixMinor == nixMinor;
+  nixPatchMismatch =
+    compiledNixVersion != null && compiledNixVersion != builtins.nixVersion && nixVersionsMatch;
+  nixPatchWarning =
+    if nixPatchMismatch then
+      lib.warn "cargo-nix-plugin: plugin compiled for Nix ${compiledNixVersion}; evaluating with ${builtins.nixVersion} (same minor, patch mismatch). Run the patch compatibility checks."
+    else
+      x: x;
 
   matchingPluginAttr = ".#cargo-nix-plugin-nix_${
     lib.replaceStrings [ "." ] [ "_" ] (lib.versions.majorMinor builtins.nixVersion)
@@ -185,7 +199,7 @@ let
         cargo-nix-plugin: builtins.resolveCargoWorkspace is not loaded.
         Nix evaluating this expression: ${builtins.nixVersion}
         Load `plugin-files` from ${matchingPluginAttr} built from this
-        checkout, or from a plugin built for the same Nix version.
+        checkout, or from a plugin built for the same major.minor version.
       '';
 
   apiLevelGuard =
@@ -194,7 +208,7 @@ let
     else
       x:
       if resolverApiLevel == apiLevel && nixVersionsMatch then
-        x
+        nixPatchWarning x
       else
         throw ''
           cargo-nix-plugin: plugin version mismatch.
@@ -204,8 +218,9 @@ let
               if compiledNixVersion == null then "unknown (plugin predates the probe)" else compiledNixVersion
             }
             Nix evaluating          = ${builtins.nixVersion}
-          Load ${matchingPluginAttr} built from this checkout and the
-          same Nix version, or set allowVersionMismatch = true to bypass.
+          Load ${matchingPluginAttr} built from this checkout and a Nix
+          release with the same major.minor version, or set
+          allowVersionMismatch = true to bypass.
         '';
 
   resultApiGuard =
@@ -293,9 +308,12 @@ let
     windows = platform.isWindows;
   };
 
-  makeResolvedTarget = platform: (makeDefaultTarget platform) // {
-    extra_cfgs = extraCfgs;
-  };
+  makeResolvedTarget =
+    platform:
+    (makeDefaultTarget platform)
+    // {
+      extra_cfgs = extraCfgs;
+    };
 
   resolvedTarget = (if target != null then target else defaultTarget) // {
     extra_cfgs = extraCfgs;
@@ -412,9 +430,7 @@ let
   # Call the plugin builtin — auto-detect mode based on metadata presence
   resolved = featureGuard (
     guardResolve (
-      builtins.resolveCargoWorkspace (
-        mkResolveArgs resolvedTarget rootFeatures noDefaultFeatures
-      )
+      builtins.resolveCargoWorkspace (mkResolveArgs resolvedTarget rootFeatures noDefaultFeatures)
     )
   );
 
@@ -455,9 +471,7 @@ let
         ''
         (
           guardResolve (
-            builtins.resolveCargoWorkspace (
-              mkResolveArgs resolvedTarget allWorkspaceFeatures false
-            )
+            builtins.resolveCargoWorkspace (mkResolveArgs resolvedTarget allWorkspaceFeatures false)
           )
         );
 
@@ -475,10 +489,7 @@ let
         (
           guardResolve (
             builtins.resolveCargoWorkspace (
-              mkResolveArgs
-                (makeResolvedTarget stdenv.buildPlatform)
-                allWorkspaceFeatures
-                false
+              mkResolveArgs (makeResolvedTarget stdenv.buildPlatform) allWorkspaceFeatures false
             )
           )
         );
@@ -502,7 +513,13 @@ let
       isRoot = sourcePath == workspaceRoot;
       isSubdir = !isRoot && relPath != sourcePath;
       # Out-of-tree crates must not fall back to the workspace `src`.
-      localSrcArg = if isRoot then "" else if isSubdir then relPath else sourcePath;
+      localSrcArg =
+        if isRoot then
+          ""
+        else if isSubdir then
+          relPath
+        else
+          sourcePath;
       ls = localSrc localSrcArg;
     in
     if sourceType == "local" then

@@ -22,6 +22,8 @@
   outputs =
     { self, nixpkgs }:
     let
+      lib = nixpkgs.lib;
+
       supportedSystems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -39,10 +41,21 @@
         "2_34" = {
           components = "nixComponents_2_34";
           binary = "nix_2_34";
+          # Oldest patch in this minor that the plugin is tested against.
+          # Loading newer-patch plugins into newer binaries is covered by
+          # the regular matrix; this entry covers stale patch builds.
+          oldestPatch = {
+            tag = "2.34.6";
+            hash = "sha256-kHMyhuzhLtH3f+wAcNvAL62ct2kmwZOp2B54SHkMMo0=";
+          };
         };
         "2_35" = {
           components = "nixComponents_2_35";
           binary = "nix_2_35";
+          oldestPatch = {
+            tag = "2.35.0";
+            hash = "sha256-EDJDon2Jkp+fg3p4F0L1mx2nh3C9w4F8J+Ddcy9X+J4=";
+          };
         };
         # Pre-release: catches plugin ABI breaks before the next stable
         # nix release lands. Expected to break occasionally on nixpkgs bumps.
@@ -53,11 +66,31 @@
       };
 
       # Build the plugin against a specific nix version's components.
-      mkPlugin =
-        pkgs: nixComponents:
+      mkVersionedPlugin =
+        pkgs: nixComponents: nixVersion:
+        let
+          pluginVersion = if nixVersion == null then (nixComponents.version or "unknown") else nixVersion;
+        in
         pkgs.callPackage ./nix/plugin.nix {
           inherit nixComponents;
+          nixVersion = pluginVersion;
         };
+
+      mkPlugin = pkgs: nixComponents: mkVersionedPlugin pkgs nixComponents null;
+
+      # Build a plugin against an older patch's Nix source while keeping
+      # the minor's packaging. This is the ABI check for stale patch
+      # builds: the resulting .so is loaded into the current patch binary.
+      mkPatchPlugin =
+        pkgs: nixComponents: patch:
+        let
+          source = pkgs.fetchFromGitHub {
+            owner = "NixOS";
+            repo = "nix";
+            inherit (patch) tag hash;
+          };
+        in
+        mkVersionedPlugin pkgs (nixComponents.overrideSource source) patch.tag;
 
       mkPluginSanitized =
         pkgs: nixComponents:
@@ -67,17 +100,48 @@
           enableSanitizers = true;
         };
 
-      # A Nix client with the matching plugin preloaded. Consumers can
-      # use this for bootstrap scripts instead of coordinating a Nix
-      # package and a plugin package by hand.
+      # A Nix client with a matching plugin preloaded. Select the plugin
+      # by the client's major.minor version and probe it in a child process
+      # before using it. A stale patch build may be ABI-compatible; the
+      # probe turns a bad load into a clear error instead of a crashed
+      # evaluator. `nix = null` uses the `nix` found on PATH.
       mkNixBootstrap =
-        pkgs: plugin: nix:
+        pkgs: pluginsByMinor: nix:
+        let
+          nixBinary = if nix != null then "${nix}/bin/nix" else "nix";
+          pluginArms = lib.concatStringsSep "\n" (
+            lib.mapAttrsToList (
+              minor: plugin: "${minor}.*) plugin=\"${plugin}/lib/nix/plugins\" ;;"
+            ) pluginsByMinor
+          );
+        in
         pkgs.writeShellApplication {
           name = "nix-with-cargo-nix-plugin";
+          runtimeInputs = [ pkgs.coreutils ];
           text = ''
-            exec ${nix}/bin/nix \
+            set -euo pipefail
+            nix_bin=${lib.escapeShellArg nixBinary}
+            nix_version_raw=$("$nix_bin" --option plugin-files "" --version)
+            nix_version="''${nix_version_raw##* }"
+            case "$nix_version" in
+              ${pluginArms}
+              *)
+                echo "cargo-nix-plugin: no plugin for Nix $nix_version" >&2
+                echo "supported major.minor versions: ${lib.concatStringsSep ", " (builtins.attrNames pluginsByMinor)}" >&2
+                exit 1
+                ;;
+            esac
+            if ! "$nix_bin" \
               --extra-experimental-features "nix-command flakes" \
-              --option plugin-files ${plugin}/lib/nix/plugins "$@"
+              --option plugin-files "$plugin" \
+              eval --impure --expr 'builtins.cargoNixApiLevel' >/dev/null 2>&1
+            then
+              echo "cargo-nix-plugin: plugin for Nix $nix_version failed to load" >&2
+              exit 1
+            fi
+            exec "$nix_bin" \
+              --extra-experimental-features "nix-command flakes" \
+              --option plugin-files "$plugin" "$@"
           '';
         };
 
@@ -165,6 +229,25 @@
           };
         };
 
+      # Build plugins keyed by major.minor. Used by the auto-selecting
+      # bootstrap wrapper so consumers don't pick a plugin by hand.
+      pluginsByMinorFor =
+        pkgs:
+        lib.listToAttrs (
+          map (
+            ver:
+            let
+              cfg = nixVersions.${ver};
+              nix = pkgs.nixVersions.${cfg.binary};
+              components = pkgs.nixVersions.${cfg.components};
+            in
+            {
+              name = lib.versions.majorMinor nix.version;
+              value = mkPlugin pkgs components;
+            }
+          ) (builtins.filter (ver: ver != "git") (builtins.attrNames nixVersions))
+        );
+
       # Build packages/tests for every nix version, suffixed with the version.
       # e.g. eval-test-nix_2_34, torture-test-nix_2_34, etc.
       perVersionPackages =
@@ -176,8 +259,11 @@
             components = pkgs.nixVersions.${cfg.components};
             nix = pkgs.nixVersions.${cfg.binary};
             plugin = mkPlugin pkgs components;
-            bootstrap = mkNixBootstrap pkgs plugin nix;
+            bootstrap = mkNixBootstrap pkgs {
+              ${lib.versions.majorMinor nix.version} = plugin;
+            } nix;
             tests = mkTests pkgs plugin nix;
+            patchPlugin = if cfg ? oldestPatch then mkPatchPlugin pkgs components cfg.oldestPatch else null;
             # The UBSan build statically links compiler-rt's minimal
             # runtime via GNU-ld --whole-archive from lib/linux/; no
             # darwin equivalent is wired up, so keep it Linux-only.
@@ -190,6 +276,9 @@
             "cargo-nix-plugin-nix_${ver}" = plugin;
             "nix_${ver}" = nix;
             "nix-with-cargo-nix-plugin-nix_${ver}" = bootstrap;
+          }
+          // nixpkgs.lib.optionalAttrs (patchPlugin != null) {
+            "cargo-nix-plugin-${cfg.oldestPatch.tag}" = patchPlugin;
           }
           // nixpkgs.lib.mapAttrs' (name: drv: nixpkgs.lib.nameValuePair "${name}-nix_${ver}" drv) tests
           // nixpkgs.lib.mapAttrs' (
@@ -208,13 +297,20 @@
         let
           defaultPlugin = mkPlugin pkgs pkgs.nixVersions.${defaultNixComponents};
           defaultNix = pkgs.nixVersions.${defaultNixBinary};
-          defaultBootstrap = mkNixBootstrap pkgs defaultPlugin defaultNix;
+          defaultPluginsByMinor = {
+            ${lib.versions.majorMinor defaultNix.version} = defaultPlugin;
+          };
+          defaultBootstrap = mkNixBootstrap pkgs defaultPluginsByMinor defaultNix;
+          autoBootstrap = mkNixBootstrap pkgs (pluginsByMinorFor pkgs) null;
         in
         {
           default = defaultPlugin;
           cargo-nix-plugin = defaultPlugin;
           nix = defaultNix;
           nixBootstrap = defaultBootstrap;
+          # Auto-selects a plugin for the `nix` found on PATH and probes it
+          # before use. This is the consumer-facing wrapper.
+          cargo-nix-nix = autoBootstrap;
           cargo-nix-prefetch = pkgs.callPackage ./nix/cargo-nix-prefetch.nix { };
           # Optional: helper for generating metadata JSON explicitly.
           # Only needed for explicit-metadata mode (`metadata` + `cargoLock`).
@@ -279,6 +375,12 @@
             self.packages.${pkgs.stdenv.hostPlatform.system}.nixBootstrap
           }/bin/nix-with-cargo-nix-plugin";
         };
+        cargo-nix-nix = {
+          type = "app";
+          program = "${
+            self.packages.${pkgs.stdenv.hostPlatform.system}.cargo-nix-nix
+          }/bin/nix-with-cargo-nix-plugin";
+        };
       });
 
       # Checks run against every nix version in the matrix, on every
@@ -296,18 +398,55 @@
             nix = pkgs.nixVersions.${cfg.binary};
             plugin = mkPlugin pkgs components;
             tests = mkTests pkgs plugin nix;
+            patchPlugin = if cfg ? oldestPatch then mkPatchPlugin pkgs components cfg.oldestPatch else null;
+            minorMismatchPlugin = mkVersionedPlugin pkgs components "2.999.0";
             sanitizedTests = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
               mkTests pkgs (mkPluginSanitized pkgs components) nix
             );
           in
           acc
           // nixpkgs.lib.mapAttrs' (name: drv: nixpkgs.lib.nameValuePair "${name}-nix_${ver}" drv) tests
+          // nixpkgs.lib.optionalAttrs (patchPlugin != null) {
+            "patch-abi-test-nix_${ver}" = pkgs.callPackage ./tests/patch-abi-test.nix {
+              plugin = patchPlugin;
+              inherit nix;
+              pluginSrc = ./.;
+              testFixtures = ./rust/tests/fixtures;
+              expectedVersion = cfg.oldestPatch.tag;
+            };
+          }
+          // {
+            "minor-mismatch-test-nix_${ver}" = pkgs.callPackage ./tests/minor-mismatch-test.nix {
+              plugin = minorMismatchPlugin;
+              inherit nix;
+              pluginSrc = ./.;
+              testFixtures = ./rust/tests/fixtures;
+            };
+          }
           // nixpkgs.lib.mapAttrs' (
             name: drv: nixpkgs.lib.nameValuePair "${name}-ubsan-nix_${ver}" drv
           ) sanitizedTests
         ) { } (builtins.attrNames nixVersions)
         // {
           cargo-compat-test = pkgs.callPackage ./tests/cargo-compat-test.nix { };
+          auto-bootstrap-test = pkgs.runCommand "cargo-nix-plugin-auto-bootstrap-test" { } ''
+            export HOME=$(mktemp -d)
+            export NIX_STORE_DIR=$TMPDIR/nix/store
+            export NIX_STATE_DIR=$TMPDIR/nix/var
+            export NIX_LOG_DIR=$TMPDIR/nix/log
+            mkdir -p $NIX_STORE_DIR $NIX_STATE_DIR $NIX_LOG_DIR
+
+            wrapper=${
+              self.packages.${pkgs.stdenv.hostPlatform.system}.cargo-nix-nix
+            }/bin/nix-with-cargo-nix-plugin
+            for nix_bin in ${pkgs.nixVersions.nix_2_34}/bin ${pkgs.nixVersions.nix_2_35}/bin; do
+              PATH="$nix_bin:$PATH" "$wrapper" --version >/dev/null
+              api=$(PATH="$nix_bin:$PATH" "$wrapper" eval --impure --raw \
+                --expr 'toString (builtins.cargoNixApiLevel or 0)')
+              test "$api" = 4
+            done
+            touch $out
+          '';
           bootstrap-test = pkgs.runCommand "cargo-nix-plugin-bootstrap-test" { } ''
             export HOME=$(mktemp -d)
             export NIX_STORE_DIR=$TMPDIR/nix/store
@@ -362,9 +501,9 @@
           };
 
           config = lib.mkIf cfg.enable {
-            # Keep the host Nix and the plugin's nixComponents in lockstep.
-            # Use the flake's locked nixpkgs, not the consumer's, so the
-            # exact-version guard sees the same patch release.
+            # Keep the host Nix and the plugin's nixComponents in the same
+            # minor. Use the flake's locked nixpkgs, not the consumer's,
+            # so the default pair has a tested patch release.
             nix.package = lib.mkDefault cfg.nixPackage;
             nix.settings.plugin-files = lib.mkAfter [
               "${cfg.package}/lib/nix/plugins"
