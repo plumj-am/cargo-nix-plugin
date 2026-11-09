@@ -533,10 +533,12 @@ compiles too — `extraCfgs` only affects dependency resolution.
   `.#cargo-nix-plugin-nix_2_34`. The flake's `nixVersions` set (in
   `flake.nix`) lists what is currently built; Nix >= 2.34 is required.
 
-  Patch compatibility is checked by `patch-abi-test-nix_2_34` and
-  `patch-abi-test-nix_2_35`: each builds a plugin against the oldest patch
-  in the minor and loads it into the current patch binary. A minor mismatch
-  is rejected by `minor-mismatch-test-nix_*`.
+  Patch compatibility is checked in both directions for each minor:
+  `patch-abi-test-nix_2_34`/`patch-abi-test-nix_2_35` build a plugin
+  against the oldest patch and load it into the current patch binary;
+  `patch-host-test-nix_2_34`/`patch-host-test-nix_2_35` load the current
+  plugin into a Nix binary built from the oldest patch source. A minor
+  mismatch is rejected by `minor-mismatch-test-nix_*`.
 
 - **Platforms**: `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`.
   Cross-compilation to other target platforms is supported.

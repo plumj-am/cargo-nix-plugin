@@ -78,19 +78,36 @@
 
       mkPlugin = pkgs: nixComponents: mkVersionedPlugin pkgs nixComponents null;
 
+      # Fetch the source for an older patch once; both the old plugin and
+      # the old Nix client use it.
+      mkPatchSource =
+        pkgs: patch:
+        pkgs.fetchFromGitHub {
+          owner = "NixOS";
+          repo = "nix";
+          inherit (patch) tag hash;
+        };
+
       # Build a plugin against an older patch's Nix source while keeping
-      # the minor's packaging. This is the ABI check for stale patch
-      # builds: the resulting .so is loaded into the current patch binary.
+      # the minor's packaging.
       mkPatchPlugin =
         pkgs: nixComponents: patch:
+        mkVersionedPlugin pkgs (nixComponents.overrideSource (mkPatchSource pkgs patch)) patch.tag;
+
+      # Build the Nix client from the older patch source. This is the
+      # direction consumers hit: they run an older patch and load the
+      # current plugin.
+      mkPatchNix =
+        pkgs: nixComponents: patch:
         let
-          source = pkgs.fetchFromGitHub {
-            owner = "NixOS";
-            repo = "nix";
-            inherit (patch) tag hash;
-          };
+          source = mkPatchSource pkgs patch;
+          components = (nixComponents.overrideSource source).overrideScope (
+            _final: _prev: {
+              version = patch.tag;
+            }
+          );
         in
-        mkVersionedPlugin pkgs (nixComponents.overrideSource source) patch.tag;
+        components.nix-everything;
 
       mkPluginSanitized =
         pkgs: nixComponents:
@@ -264,6 +281,7 @@
             } nix;
             tests = mkTests pkgs plugin nix;
             patchPlugin = if cfg ? oldestPatch then mkPatchPlugin pkgs components cfg.oldestPatch else null;
+            patchNix = if cfg ? oldestPatch then mkPatchNix pkgs components cfg.oldestPatch else null;
             # The UBSan build statically links compiler-rt's minimal
             # runtime via GNU-ld --whole-archive from lib/linux/; no
             # darwin equivalent is wired up, so keep it Linux-only.
@@ -279,6 +297,7 @@
           }
           // nixpkgs.lib.optionalAttrs (patchPlugin != null) {
             "cargo-nix-plugin-${cfg.oldestPatch.tag}" = patchPlugin;
+            "nix-${cfg.oldestPatch.tag}" = patchNix;
           }
           // nixpkgs.lib.mapAttrs' (name: drv: nixpkgs.lib.nameValuePair "${name}-nix_${ver}" drv) tests
           // nixpkgs.lib.mapAttrs' (
@@ -399,6 +418,7 @@
             plugin = mkPlugin pkgs components;
             tests = mkTests pkgs plugin nix;
             patchPlugin = if cfg ? oldestPatch then mkPatchPlugin pkgs components cfg.oldestPatch else null;
+            patchNix = if cfg ? oldestPatch then mkPatchNix pkgs components cfg.oldestPatch else null;
             minorMismatchPlugin = mkVersionedPlugin pkgs components "2.999.0";
             sanitizedTests = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
               mkTests pkgs (mkPluginSanitized pkgs components) nix
@@ -406,13 +426,22 @@
           in
           acc
           // nixpkgs.lib.mapAttrs' (name: drv: nixpkgs.lib.nameValuePair "${name}-nix_${ver}" drv) tests
-          // nixpkgs.lib.optionalAttrs (patchPlugin != null) {
+          // nixpkgs.lib.optionalAttrs (patchPlugin != null && pkgs.stdenv.hostPlatform.isLinux) {
             "patch-abi-test-nix_${ver}" = pkgs.callPackage ./tests/patch-abi-test.nix {
               plugin = patchPlugin;
               inherit nix;
               pluginSrc = ./.;
               testFixtures = ./rust/tests/fixtures;
               expectedVersion = cfg.oldestPatch.tag;
+              expectedNixVersion = nix.version;
+            };
+            "patch-host-test-nix_${ver}" = pkgs.callPackage ./tests/patch-abi-test.nix {
+              plugin = plugin;
+              nix = patchNix;
+              pluginSrc = ./.;
+              testFixtures = ./rust/tests/fixtures;
+              expectedVersion = components.version;
+              expectedNixVersion = cfg.oldestPatch.tag;
             };
           }
           // {

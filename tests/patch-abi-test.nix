@@ -11,6 +11,7 @@
   pluginSrc,
   testFixtures,
   expectedVersion,
+  expectedNixVersion ? null,
 }:
 
 pkgs.runCommand "cargo-nix-plugin-patch-abi-test"
@@ -39,6 +40,15 @@ pkgs.runCommand "cargo-nix-plugin-patch-abi-test"
       echo "unexpected plugin version: $version (want ${expectedVersion})" >&2
       exit 1
     }
+    if [ -n "${expectedNixVersion}" ]; then
+      host=$(nix-instantiate --eval --strict --raw \
+        --option plugin-files "" \
+        --expr 'builtins.nixVersion')
+      [[ "$host" == "${expectedNixVersion}" ]] || {
+        echo "unexpected host Nix version: $host (want ${expectedNixVersion})" >&2
+        exit 1
+      }
+    fi
 
     # Exercise the primop directly.
     nix_instantiate 'import ${pluginSrc}/tests/eval-test.nix { fixtures = ${testFixtures}; }' \
