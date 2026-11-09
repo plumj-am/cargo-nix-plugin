@@ -540,6 +540,10 @@ compiles too — `extraCfgs` only affects dependency resolution.
   plugin into a Nix binary built from the oldest patch source. A minor
   mismatch is rejected by `minor-mismatch-test-nix_*`.
 
+  Verified pairs are **2.34.6 ↔ 2.34.9** and **2.35.0 ↔ 2.35.3**. Other
+  patches in the same minor are accepted with a warning, but are not
+  proven by CI; do not treat them as verified.
+
 - **Platforms**: `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`.
   Cross-compilation to other target platforms is supported.
 

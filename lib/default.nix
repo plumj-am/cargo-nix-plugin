@@ -183,7 +183,7 @@ let
     compiledNixVersion != null && compiledNixVersion != builtins.nixVersion && nixVersionsMatch;
   nixPatchWarning =
     if nixPatchMismatch then
-      lib.warn "cargo-nix-plugin: plugin compiled for Nix ${compiledNixVersion}; evaluating with ${builtins.nixVersion} (same minor, patch mismatch). Run the patch compatibility checks."
+      lib.warn "cargo-nix-plugin: plugin compiled for Nix ${compiledNixVersion}; evaluating with ${builtins.nixVersion} (same minor, patch mismatch). Only the patch pairs covered by the compatibility checks are verified."
     else
       x: x;
 

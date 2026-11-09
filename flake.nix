@@ -128,7 +128,7 @@
           nixBinary = if nix != null then "${nix}/bin/nix" else "nix";
           pluginArms = lib.concatStringsSep "\n" (
             lib.mapAttrsToList (
-              minor: plugin: "${minor}.*) plugin=\"${plugin}/lib/nix/plugins\" ;;"
+              minor: plugin: "${minor}.*|${minor}pre*) plugin=\"${plugin}/lib/nix/plugins\" ;;"
             ) pluginsByMinor
           );
         in
@@ -474,6 +474,30 @@
                 --expr 'toString (builtins.cargoNixApiLevel or 0)')
               test "$api" = 4
             done
+            touch $out
+          '';
+          git-bootstrap-test = pkgs.runCommand "cargo-nix-plugin-git-bootstrap-test" { } ''
+            export HOME=$(mktemp -d)
+            export NIX_STORE_DIR=$TMPDIR/nix/store
+            export NIX_STATE_DIR=$TMPDIR/nix/var
+            export NIX_LOG_DIR=$TMPDIR/nix/log
+            mkdir -p $NIX_STORE_DIR $NIX_STATE_DIR $NIX_LOG_DIR
+
+            wrapper=${
+              self.packages.${pkgs.stdenv.hostPlatform.system}.nix-with-cargo-nix-plugin-nix_git
+            }/bin/nix-with-cargo-nix-plugin
+            expected=${pkgs.nixVersions.git.version}
+            version=$($wrapper --version)
+            case "$version" in
+              *"$expected"*) ;;
+              *)
+                echo "unexpected Nix version from git wrapper: $version (want $expected)" >&2
+                exit 1
+                ;;
+            esac
+            api=$($wrapper eval --impure --raw \
+              --expr 'toString (builtins.cargoNixApiLevel or 0)')
+            test "$api" = 4
             touch $out
           '';
           bootstrap-test = pkgs.runCommand "cargo-nix-plugin-bootstrap-test" { } ''
